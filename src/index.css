@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root,
+:root[data-theme="light"] {
+  --bg-void: #EFEFEF;
+  --bg-panel: #FFFFFF;
+  --bg-elevated: #E2E2E5;
+  --border-hairline: rgba(0, 0, 0, 0.12);
+  --border-active: rgba(0, 0, 0, 0.30);
+  --accent-laser: #E64A00;
+  --text-primary: #09090B;
+  --text-muted: #52525B;
+
+  --ease-mechanical: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+:root[data-theme="dark"],
+.dark {
+  --bg-void: #08080A;
+  --bg-panel: #111114;
+  --bg-elevated: #1A1A1F;
+  --border-hairline: rgba(255, 255, 255, 0.08);
+  --border-active: rgba(255, 255, 255, 0.22);
+  --accent-laser: #FF4D00;
+  --text-primary: #F4F4F5;
+  --text-muted: #71717A;
+
+  --ease-mechanical: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background-color: var(--bg-void);
+  color: var(--text-primary);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.font-mono {
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Blueprint dot grid for desktop workstation */
+.blueprint-grid {
+  background-image: radial-gradient(rgba(128, 128, 128, 0.12) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* Custom crisp slider track and thumb */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 2px;
+  background: var(--border-active);
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: var(--accent-laser);
+  cursor: pointer;
+  border-radius: 2px;
+  transition: transform 80ms var(--ease-mechanical);
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: var(--accent-laser);
+  cursor: pointer;
+  border-radius: 2px;
+  border: none;
+  transition: transform 80ms var(--ease-mechanical);
+}
