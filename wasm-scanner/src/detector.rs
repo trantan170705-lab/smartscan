@@ -562,52 +562,17 @@ pub fn refine_quad_corners(
     refined[0].y = t_tl_y;
     refined[1].y = t_tr_y;
 
-    // 2. Geometric & Perspective Regularization for Overlapping Papers:
-    // If bottom width bulges out wider than top width, pull BR into vertical alignment with TR:
-    let cur_w_top = ((refined[1].x - refined[0].x).powi(2) + (refined[1].y - refined[0].y).powi(2)).sqrt();
-    let cur_w_bot = ((refined[2].x - refined[3].x).powi(2) + (refined[2].y - refined[3].y).powi(2)).sqrt();
-    if cur_w_bot > cur_w_top * 1.02 {
-        let diff_r = (refined[2].x - refined[1].x).abs();
-        let diff_l = (refined[3].x - refined[0].x).abs();
-        if diff_r > diff_l + 2.0 {
-            refined[2].x = refined[1].x + (refined[3].x - refined[0].x);
-        } else if diff_l > diff_r + 2.0 {
-            refined[3].x = refined[0].x + (refined[2].x - refined[1].x);
-        }
-    }
-
-    // Pull BR and BL up to the true bottom edge of the top sheet:
-    // When a document sits on a background photocopy sheet, the right height of the top document
-    // is at most ~1.41..1.42x top width, while left height can reach up to 1.65x under perspective tilt:
-    let max_h_left = cur_w_top * 1.65;
-    let max_h_right = cur_w_top * 1.412;
-
-    if (refined[3].y - refined[0].y) > max_h_left {
-        refined[3].y = refined[0].y + max_h_left;
-    }
-    if (refined[2].y - refined[1].y) > max_h_right {
-        refined[2].y = refined[1].y + max_h_right;
-    }
-
-    // Now snap the bottom line (refined[3] to refined[2]) to the strongest edge:
-    // Limit downward search to +2 to strictly prevent leaking into underlying photocopy text
-    let mut best_bot_off = 0.0f32;
-    let mut max_bot_g = sample_line_gradient((refined[3].x, refined[3].y), (refined[2].x, refined[2].y), grad, w, h, 30);
-    for off in -8..=2 {
-        if off == 0 {
-            continue;
-        }
-        let o = off as f32;
-        let cur_bl = (refined[3].x, refined[3].y + o);
-        let cur_br = (refined[2].x, refined[2].y + o);
-        let g = sample_line_gradient(cur_bl, cur_br, grad, w, h, 30);
-        if g > max_bot_g {
-            max_bot_g = g;
-            best_bot_off = o;
-        }
-    }
-    refined[3].y += best_bot_off;
-    refined[2].y += best_bot_off;
+    // Bottom border normal: vertical (0, 1)
+    let (_, b_bl_y, _, b_br_y) = snap_line_to_strongest_gradient(
+        (refined[3].x, refined[3].y),
+        (refined[2].x, refined[2].y),
+        grad,
+        w,
+        h,
+        (0.0, 1.0),
+    );
+    refined[3].y = b_bl_y;
+    refined[2].y = b_br_y;
 
     order_quad_points(&refined)
 }
@@ -829,32 +794,31 @@ pub fn detect_document_quad(rgba: &[u8], width: u32, height: u32) -> Option<Vec<
         if frac >= 0.95 && p95 == 200 { p95 = i as u8; }
     }
 
-    // PASS 1: White Paper Saliency (CamScanner Core Breakthrough:
-    // When photographing a white paper on a computer monitor, dark desk, or lap,
-    // the paper is in the top 15% brightest pixels. High-percentile thresholding
-    // completely ELIMINATES the computer screen, monitor bezels, keyboard, and shadows!)
-    if p90 >= 135 {
-        let th_white_mid = (((p80 as u32 + p95 as u32) / 2) as u8).max(140);
-        let th_white_high = p90.max(150);
-        let th_white_low = p80.max(125);
-        for &threshold in &[th_white_mid, th_white_high, th_white_low] {
-            let mut binary = GrayImage::new(target_w, target_h);
-            for y in 0..target_h {
-                for x in 0..target_w {
-                    let p = gray_small.get_pixel(x, y)[0];
-                    let v = if p > threshold { 255 } else { 0 };
-                    binary.put_pixel(x, y, image::Luma([v]));
-                }
+    // Compute Otsu optimal threshold value
+    let otsu_val = compute_otsu_threshold(&gray_small);
+
+    // PASS 1: White Paper Saliency & Adaptive Midpoint
+    // Cleanly separates paper from desk even under directional lighting or shadows
+    let th_mid_paper = (((otsu_val as u32 + p90 as u32) / 2) as u8).clamp(130, 195);
+    let th_white_high = p90.saturating_sub(15).max(140);
+    let th_white_low = p80.saturating_sub(25).max(125);
+
+    for &threshold in &[th_mid_paper, th_white_high, th_white_low] {
+        let mut binary = GrayImage::new(target_w, target_h);
+        for y in 0..target_h {
+            for x in 0..target_w {
+                let p = gray_small.get_pixel(x, y)[0];
+                let v = if p > threshold { 255 } else { 0 };
+                binary.put_pixel(x, y, image::Luma([v]));
             }
-            let closed_blob = morphological_close(&binary, 5);
-            for contour in find_contours::<i32>(&closed_blob) {
-                evaluate_contour(&contour.points);
-            }
+        }
+        let closed_blob = morphological_close(&binary, 5);
+        for contour in find_contours::<i32>(&closed_blob) {
+            evaluate_contour(&contour.points);
         }
     }
 
     // PASS 2: Otsu Multi-thresholding (for white or textured desk backgrounds)
-    let otsu_val = compute_otsu_threshold(&gray_small);
     for &threshold in &[otsu_val, otsu_val.saturating_sub(25), otsu_val.saturating_add(25)] {
         let mut binary = GrayImage::new(target_w, target_h);
         for y in 0..target_h {
