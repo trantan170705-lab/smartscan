@@ -1,0 +1,16 @@
+{
+  "name": "wasm-scanner",
+  "type": "module",
+  "description": "Pure Rust WebAssembly image processing and document scanning engine",
+  "version": "0.1.0",
+  "files": [
+    "wasm_scanner_bg.wasm",
+    "wasm_scanner.js",
+    "wasm_scanner.d.ts"
+  ],
+  "main": "wasm_scanner.js",
+  "types": "wasm_scanner.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
