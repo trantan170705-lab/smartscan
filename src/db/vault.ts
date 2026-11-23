@@ -14,6 +14,7 @@ export interface VaultPage {
   processedThumbnailBlob: Blob;
   originalWidth: number;
   originalHeight: number;
+  extractedText?: string;
 }
 
 interface VaultDBSchema extends DBSchema {

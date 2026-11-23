@@ -18,6 +18,7 @@ import {
   X,
   Columns2,
   Edit2,
+  Type,
 } from 'lucide-react';
 import type { VaultPage } from '../../db/vault';
 import { ThemeToggle } from '../common/ThemeToggle';
@@ -42,6 +43,7 @@ interface AdaptiveStudioProps {
   onAddPage: () => void;
   onExportPdf: (pageSize: string) => Promise<void>;
   onExportSingleJpeg: (page: VaultPage) => Promise<void>;
+  onExtractText?: (page: VaultPage) => void;
   onOpenHistory?: () => void;
   onBackToHome?: () => void;
   isExporting?: boolean;
@@ -61,6 +63,7 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
   onAddPage,
   onExportPdf,
   onExportSingleJpeg,
+  onExtractText,
   onOpenHistory,
   onBackToHome,
   isExporting = false,
@@ -706,6 +709,17 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
             <span className="font-mono text-[9px] tracking-tight">{t.mobileCrop}</span>
           </button>
 
+          {/* Trích xuất văn bản (CamScanner OCR) */}
+          <button
+            type="button"
+            onClick={() => activePage && onExtractText && onExtractText(activePage)}
+            className="flex flex-col items-center justify-center gap-0.5 text-[var(--text-muted)] hover:text-[var(--accent-laser)] active:scale-95 transition-transform cursor-pointer px-2"
+            title="Trích xuất văn bản & Mở Google Docs"
+          >
+            <Type size={18} strokeWidth={1.75} />
+            <span className="font-mono text-[9px] tracking-tight">{t.toolOcr}</span>
+          </button>
+
           {/* Tinh chỉnh */}
           <button
             type="button"
@@ -798,6 +812,19 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
 
             {/* Theme Switcher (Dark / Light) */}
             <ThemeToggle />
+
+            {/* Trích xuất văn bản (OCR) Button */}
+            {activePage && onExtractText && (
+              <button
+                type="button"
+                onClick={() => onExtractText(activePage)}
+                className="px-3 py-1.5 rounded-[4px] bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--accent-laser)] text-[var(--text-primary)] hover:text-[var(--accent-laser)] font-mono text-[11px] font-medium flex items-center gap-1.5 cursor-pointer active:scale-95 transition-all"
+                title="Trích xuất văn bản OCR & Mở Google Docs"
+              >
+                <Type size={13} strokeWidth={2} />
+                <span>{t.toolOcr}</span>
+              </button>
+            )}
 
             {/* Export PDF Button */}
             <button
@@ -1108,6 +1135,17 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
 
             {/* Bottom Export & Page Actions */}
             <div className="pt-4 border-t border-[var(--border-hairline)] flex flex-col gap-2 shrink-0">
+              {activePage && onExtractText && (
+                <button
+                  type="button"
+                  onClick={() => onExtractText(activePage)}
+                  className="w-full py-2 px-3 rounded-[4px] bg-[var(--accent-laser)]/10 border border-[var(--accent-laser)]/40 hover:bg-[var(--accent-laser)]/20 font-mono text-[11px] text-[var(--accent-laser)] font-semibold flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                >
+                  <Type size={13} strokeWidth={2} />
+                  <span>TRÍCH XUẤT VĂN BẢN (OCR)</span>
+                </button>
+              )}
+
               {activePage && (
                 <button
                   type="button"

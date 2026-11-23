@@ -101,6 +101,7 @@ export interface TranslationDictionary {
   toolImportFile: string;
   toolIdCard: string;
   toolOcr: string;
+  toolOcrText: string;
   toolAiSolver: string;
   toolAll: string;
   recentTitle: string;
@@ -217,6 +218,7 @@ export const translations: Record<Language, TranslationDictionary> = {
     toolImportFile: 'Nhập tệp',
     toolIdCard: 'Thẻ ID',
     toolOcr: 'Trích xuất',
+    toolOcrText: 'Trích xuất văn bản',
     toolAiSolver: 'AI Solver',
     toolAll: 'Tất cả',
     recentTitle: 'Gần đây',
@@ -331,6 +333,7 @@ export const translations: Record<Language, TranslationDictionary> = {
     toolImportFile: 'Import File',
     toolIdCard: 'ID Card',
     toolOcr: 'Extract',
+    toolOcrText: 'Extract Text',
     toolAiSolver: 'AI Solver',
     toolAll: 'All Tools',
     recentTitle: 'Recent',

@@ -463,7 +463,7 @@ fn score_quad_candidate(
 /// Scans inward from an outer candidate border towards its opposite border.
 /// If an outer leakage (e.g. background photocopy paper, desk gap) is present,
 
-/// Refine a border line by searching locally (within ±8 pixels) along the normal direction for the sharpest edge
+/// Refine a border line by searching locally (within ±16 pixels) along the normal direction for the sharpest edge
 fn snap_line_to_strongest_gradient(
     p1: (f32, f32),
     p2: (f32, f32),
@@ -475,7 +475,7 @@ fn snap_line_to_strongest_gradient(
     let mut best_offset = 0.0f32;
     let mut best_score = sample_line_gradient(p1, p2, grad, w, h, 30);
 
-    for offset in -10..=10 {
+    for offset in -16..=16 {
         if offset == 0 {
             continue;
         }
@@ -525,7 +525,14 @@ pub fn refine_quad_corners(
         return order_quad_points(&refined);
     }
 
-    // 1. Fine local snap for Left, Right, and Top borders (within ±8 pixels to land exactly on the outer white paper boundary)
+    // 1. Fine local snap for Left, Right, Top and Bottom borders
+    // Overlapping object on left rejection (e.g. clipboard/paper to the left):
+    // In perspective projection, if left border leans sharply left (BL.x < TL.x - 8)
+    // while right border is vertical or leans right (BR.x >= TR.x), BL has swallowed side clutter.
+    if refined[3].x < refined[0].x - 8.0 && refined[2].x >= refined[1].x - 4.0 {
+        refined[3].x = refined[0].x + (refined[2].x - refined[1].x) * 0.05;
+    }
+
     // Left border normal: horizontal (1, 0)
     let (l_tl_x, _, l_bl_x, _) = snap_line_to_strongest_gradient(
         (refined[0].x, refined[0].y),

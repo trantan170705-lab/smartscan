@@ -45,6 +45,7 @@ interface DocumentVaultProps {
   onOpenStudio?: () => void;
   onSelectPage?: (idx: number) => void;
   onEditDocument?: (item: ExportHistoryItem) => void;
+  onTriggerExtractText?: (source: 'camera' | 'import' | 'existing') => void;
   pages?: VaultPage[];
   isProcessing?: boolean;
 }
@@ -55,6 +56,7 @@ export const DocumentVault: React.FC<DocumentVaultProps> = ({
   onOpenHistory,
   onOpenStudio,
   onEditDocument,
+  onTriggerExtractText,
   pages = [],
   isProcessing = false,
 }) => {
@@ -71,6 +73,7 @@ export const DocumentVault: React.FC<DocumentVaultProps> = ({
   const [historyItems, setHistoryItems] = useState<ExportHistoryItem[]>([]);
   const [historyThumbUrls, setHistoryThumbUrls] = useState<Record<string, string>>({});
   const [notification, setNotification] = useState<string | null>(null);
+  const [isExtractPickerOpen, setIsExtractPickerOpen] = useState<boolean>(false);
 
   // Load history on mount
   const loadHistory = async () => {
@@ -229,10 +232,10 @@ export const DocumentVault: React.FC<DocumentVaultProps> = ({
       code: 'OCR_TXT',
       icon: Type,
       action: () => {
-        if (pages.length > 0 && onOpenStudio) {
-          onOpenStudio();
+        if (pages.length > 0) {
+          onTriggerExtractText ? onTriggerExtractText('existing') : onOpenStudio?.();
         } else {
-          fileInputRef.current?.click();
+          setIsExtractPickerOpen(true);
         }
       },
     },
@@ -611,7 +614,13 @@ export const DocumentVault: React.FC<DocumentVaultProps> = ({
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 <button
                   type="button"
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => {
+                    if (pages.length > 0) {
+                      onTriggerExtractText ? onTriggerExtractText('existing') : onOpenStudio?.();
+                    } else {
+                      setIsExtractPickerOpen(true);
+                    }
+                  }}
                   className="p-3 rounded-[4px] bg-[var(--bg-panel)] border border-[var(--border-hairline)] hover:border-[var(--accent-laser)] flex items-center gap-2.5 text-left transition-colors cursor-pointer group"
                 >
                   <div className="w-8 h-8 rounded-[3px] bg-[var(--bg-elevated)] border border-[var(--border-hairline)] flex items-center justify-center shrink-0 group-hover:text-[var(--accent-laser)]">
@@ -771,6 +780,80 @@ export const DocumentVault: React.FC<DocumentVaultProps> = ({
           </span>
         </button>
       </nav>
+
+      {/* Extract Text Source Selection Dialog */}
+      {isExtractPickerOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in select-none">
+          <div className="w-full max-w-md bg-[var(--bg-panel)] border border-[var(--border-hairline)] rounded-[6px] shadow-2xl p-5 flex flex-col gap-4">
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--border-hairline)]">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-[4px] bg-[var(--accent-laser)]/10 text-[var(--accent-laser)] flex items-center justify-center border border-[var(--accent-laser)]/20">
+                  <Type size={16} strokeWidth={2} />
+                </div>
+                <div>
+                  <h3 className="font-mono text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider">
+                    TRÍCH XUẤT VĂN BẢN (OCR)
+                  </h3>
+                  <p className="font-mono text-[10px] text-[var(--text-muted)]">
+                    Tự động nhận diện chữ tiếng Việt & mở khung soạn thảo
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsExtractPickerOpen(false)}
+                className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsExtractPickerOpen(false);
+                  onTriggerExtractText ? onTriggerExtractText('camera') : onOpenViewfinder();
+                }}
+                className="p-3.5 rounded-[4px] bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--accent-laser)] flex items-center gap-3 text-left transition-colors cursor-pointer group"
+              >
+                <div className="w-10 h-10 rounded-[4px] bg-[var(--bg-panel)] border border-[var(--border-hairline)] group-hover:border-[var(--accent-laser)] flex items-center justify-center shrink-0 text-[var(--accent-laser)]">
+                  <Camera size={20} strokeWidth={1.75} />
+                </div>
+                <div>
+                  <div className="font-mono text-xs font-bold text-[var(--text-primary)] group-hover:text-[var(--accent-laser)]">
+                    MỞ MÁY ẢNH ĐỂ CHỤP
+                  </div>
+                  <div className="font-mono text-[10px] text-[var(--text-muted)]">
+                    Chụp tài liệu thực tế, tự động làm thẳng & trích xuất văn bản
+                  </div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsExtractPickerOpen(false);
+                  onTriggerExtractText ? onTriggerExtractText('import') : fileInputRef.current?.click();
+                }}
+                className="p-3.5 rounded-[4px] bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--accent-laser)] flex items-center gap-3 text-left transition-colors cursor-pointer group"
+              >
+                <div className="w-10 h-10 rounded-[4px] bg-[var(--bg-panel)] border border-[var(--border-hairline)] group-hover:border-[var(--accent-laser)] flex items-center justify-center shrink-0 text-[var(--accent-laser)]">
+                  <Upload size={20} strokeWidth={1.75} />
+                </div>
+                <div>
+                  <div className="font-mono text-xs font-bold text-[var(--text-primary)] group-hover:text-[var(--accent-laser)]">
+                    CHỌN ẢNH TỪ THIẾT BỊ
+                  </div>
+                  <div className="font-mono text-[10px] text-[var(--text-muted)]">
+                    Tải lên file ảnh có sẵn để bóc tách chữ tiếng Việt
+                  </div>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

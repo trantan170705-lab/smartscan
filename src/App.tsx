@@ -20,6 +20,7 @@ import { LiveViewfinder } from './components/camera/LiveViewfinder';
 import { QuadEditor } from './components/editor/QuadEditor';
 import { AdaptiveStudio } from './components/studio/AdaptiveStudio';
 import { ExportHistoryModal } from './components/common/ExportHistoryModal';
+import { TextExtractionModal } from './components/common/TextExtractionModal';
 
 export const App: React.FC = () => {
   const [pages, setPages] = useState<VaultPage[]>([]);
@@ -33,6 +34,11 @@ export const App: React.FC = () => {
     buildDocumentFileName('Tài liệu scan')
   );
   const [editingHistoryId, setEditingHistoryId] = useState<string | null>(null);
+
+  // OCR Text Extraction Modal State
+  const [isOcrModalOpen, setIsOcrModalOpen] = useState<boolean>(false);
+  const [ocrTargetPage, setOcrTargetPage] = useState<VaultPage | null>(null);
+  const [isAutoOcrOnCapture, setIsAutoOcrOnCapture] = useState<boolean>(false);
 
   const { detectQuad, warpPerspective, applyFilter, encodeJpeg, generatePdf, wasmReady } =
     useScannerWorker();
@@ -179,6 +185,12 @@ export const App: React.FC = () => {
         });
         setActivePageIndex(targetIdx);
         setViewMode('studio');
+
+        if (isAutoOcrOnCapture && newPages.length > 0) {
+          setIsAutoOcrOnCapture(false);
+          setOcrTargetPage(newPages[0]);
+          setIsOcrModalOpen(true);
+        }
       } catch (err) {
         console.error('File import failed:', err);
       } finally {
@@ -221,8 +233,14 @@ export const App: React.FC = () => {
       });
       setActivePageIndex(targetIdx);
       setViewMode('studio');
+
+      if (isAutoOcrOnCapture) {
+        setIsAutoOcrOnCapture(false);
+        setOcrTargetPage(newPage);
+        setIsOcrModalOpen(true);
+      }
     },
-    [pages.length]
+    [pages.length, isAutoOcrOnCapture]
   );
 
   // Non-destructive page updates
@@ -234,6 +252,54 @@ export const App: React.FC = () => {
       );
     },
     []
+  );
+
+  // Open OCR Text Extraction Modal
+  const handleOpenOcrModal = useCallback(
+    (page?: VaultPage) => {
+      const target = page || pages[activePageIndex] || pages[0] || null;
+      if (target) {
+        setOcrTargetPage(target);
+        setIsOcrModalOpen(true);
+      }
+    },
+    [pages, activePageIndex]
+  );
+
+  // Trigger Extract Text from Vault
+  const handleTriggerExtractText = useCallback(
+    (source: 'camera' | 'import' | 'existing') => {
+      if (source === 'existing') {
+        handleOpenOcrModal();
+      } else if (source === 'camera') {
+        setIsAutoOcrOnCapture(true);
+        setViewMode('camera');
+      } else if (source === 'import') {
+        setIsAutoOcrOnCapture(true);
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*';
+        input.multiple = true;
+        input.onchange = (e) => {
+          const files = (e.target as HTMLInputElement).files;
+          if (files && files.length > 0) {
+            handleImportFiles(files);
+          }
+        };
+        input.click();
+      }
+    },
+    [handleOpenOcrModal, handleImportFiles]
+  );
+
+  // Save extracted OCR text to VaultPage
+  const handleSavePageExtractedText = useCallback(
+    async (newText: string) => {
+      if (ocrTargetPage) {
+        await handleUpdatePage(ocrTargetPage.id, { extractedText: newText });
+      }
+    },
+    [ocrTargetPage, handleUpdatePage]
   );
 
   // Delete page
@@ -582,6 +648,7 @@ export const App: React.FC = () => {
           onOpenStudio={() => setViewMode('studio')}
           onSelectPage={setActivePageIndex}
           onEditDocument={handleEditHistoryItem}
+          onTriggerExtractText={handleTriggerExtractText}
           pages={pages}
           isProcessing={isProcessingFiles}
         />
@@ -603,6 +670,7 @@ export const App: React.FC = () => {
           onAddPage={() => setViewMode('camera')}
           onExportPdf={handleExportPdf}
           onExportSingleJpeg={handleExportSingleJpeg}
+          onExtractText={handleOpenOcrModal}
           onOpenHistory={() => setIsHistoryOpen(true)}
           onBackToHome={() => setViewMode('vault')}
           isExporting={isExporting}
@@ -613,6 +681,17 @@ export const App: React.FC = () => {
       <ExportHistoryModal
         isOpen={isHistoryOpen}
         onClose={() => setIsHistoryOpen(false)}
+      />
+
+      {/* 6. Precision OCR & Text Extraction Editor Modal */}
+      <TextExtractionModal
+        isOpen={isOcrModalOpen}
+        onClose={() => setIsOcrModalOpen(false)}
+        imageSource={ocrTargetPage ? (ocrTargetPage.processedThumbnailBlob || ocrTargetPage.originalBlob) : null}
+        thumbnailBlob={ocrTargetPage ? (ocrTargetPage.processedThumbnailBlob || ocrTargetPage.originalBlob) : undefined}
+        docTitle={docTitle}
+        initialText={ocrTargetPage?.extractedText || ''}
+        onSaveExtractedText={handleSavePageExtractedText}
       />
     </div>
   );
