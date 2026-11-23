@@ -36,6 +36,7 @@ import {
   deleteExportHistoryItem,
   type ExportHistoryItem,
 } from '../../db/exportHistory';
+import { sharePdfDocument } from '../../utils/shareService';
 import type { VaultPage } from '../../db/vault';
 
 interface DocumentVaultProps {
@@ -131,23 +132,7 @@ export const DocumentVault: React.FC<DocumentVaultProps> = ({
 
   const handleSharePdf = async (item: ExportHistoryItem, e: React.MouseEvent) => {
     e.stopPropagation();
-    const file = new File([item.pdfBlob], item.fileName, { type: 'application/pdf' });
-    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-      try {
-        await navigator.share({
-          files: [file],
-          title: item.fileName,
-          text: `SmartScan: ${item.fileName}`,
-        });
-        showToast('CHIA SẺ THÀNH CÔNG');
-      } catch (err: unknown) {
-        if ((err as Error).name !== 'AbortError') {
-          handleDownloadPdf(item, e);
-        }
-      }
-    } else {
-      handleDownloadPdf(item, e);
-    }
+    await sharePdfDocument(item.pdfBlob, item.fileName, (msg: string) => showToast(msg));
   };
 
   const handleDownloadPdf = (item: ExportHistoryItem, e: React.MouseEvent) => {

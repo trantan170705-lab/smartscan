@@ -729,8 +729,50 @@ pub fn detect_document_quad(rgba: &[u8], width: u32, height: u32) -> Option<Vec<
     }
 
     let frame_area = (target_w * target_h) as f64;
-    // Allow real documents that occupy from 5% of the frame (e.g. document shown on computer screen)
-    let min_area = frame_area * 0.045;
+
+    // Check if the image is ALREADY a clean scanned document / screenshot / pre-cropped page
+    // (i.e. paper background extends to the image borders, no table/desk background outside)
+    let mut border_bright_samples = 0u32;
+    let mut total_border_samples = 0u32;
+    for x in (0..target_w).step_by(3) {
+        let p_top = gray_small.get_pixel(x, 1)[0];
+        let p_bot = gray_small.get_pixel(x, target_h.saturating_sub(2))[0];
+        if p_top >= 170 { border_bright_samples += 1; }
+        if p_bot >= 170 { border_bright_samples += 1; }
+        total_border_samples += 2;
+    }
+    for y in (0..target_h).step_by(3) {
+        let p_left = gray_small.get_pixel(1, y)[0];
+        let p_right = gray_small.get_pixel(target_w.saturating_sub(2), y)[0];
+        if p_left >= 170 { border_bright_samples += 1; }
+        if p_right >= 170 { border_bright_samples += 1; }
+        total_border_samples += 2;
+    }
+
+    let border_bright_ratio = if total_border_samples > 0 {
+        border_bright_samples as f32 / total_border_samples as f32
+    } else {
+        0.0
+    };
+
+    let c_tl = gray_small.get_pixel(2, 2)[0];
+    let c_tr = gray_small.get_pixel(target_w.saturating_sub(3), 2)[0];
+    let c_bl = gray_small.get_pixel(2, target_h.saturating_sub(3))[0];
+    let c_br = gray_small.get_pixel(target_w.saturating_sub(3), target_h.saturating_sub(3))[0];
+    let corners_bright = (c_tl >= 160 as u8) as u32 + (c_tr >= 160 as u8) as u32 + (c_bl >= 160 as u8) as u32 + (c_br >= 160 as u8) as u32;
+
+    if border_bright_ratio >= 0.58 && corners_bright >= 2 {
+        // The image is already a clean document / full-frame scan! Keep full 100% frame without cropping inside text.
+        return Some(vec![
+            0.0, 0.0,
+            width as f32, 0.0,
+            width as f32, height as f32,
+            0.0, height as f32,
+        ]);
+    }
+
+    // Allow real documents that occupy from 18% of the frame (avoid cropping small paragraphs inside a page)
+    let min_area = frame_area * 0.18;
     let max_area = frame_area * 0.96;
 
     // Compute edge gradient map for robust candidate evaluation
@@ -858,6 +900,15 @@ pub fn detect_document_quad(rgba: &[u8], width: u32, height: u32) -> Option<Vec<
             best_score = score;
             best_quad = Some(*quad);
         }
+    }
+
+    if best_quad.is_none() || (best_score < 12.0 && border_bright_ratio >= 0.40) {
+        return Some(vec![
+            0.0, 0.0,
+            width as f32, 0.0,
+            width as f32, height as f32,
+            0.0, height as f32,
+        ]);
     }
 
     best_quad.map(|q| {

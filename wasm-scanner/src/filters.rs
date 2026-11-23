@@ -276,19 +276,24 @@ pub fn apply_scan_filter(
 
                     if is_red_seal {
                         // Boost Vietnamese red seal brilliance
-                        r_div = (r_div * 1.15).min(255.0);
-                        g_div = (g_div * 0.88).min(255.0);
-                        b_div = (b_div * 0.88).min(255.0);
-                    } else if luma >= 210.0 {
-                        // Paper background: smooth roll-off to white
-                        let f = ((luma - 210.0) / 45.0).clamp(0.0, 1.0);
-                        let w_factor = f.powf(1.2);
-                        r_div = r_div + (255.0 - r_div) * w_factor;
-                        g_div = g_div + (255.0 - g_div) * w_factor;
-                        b_div = b_div + (255.0 - b_div) * w_factor;
-                    } else if luma < 175.0 {
-                        // Text & ink: deepen contrast
-                        let d_factor = (luma / 175.0).powf(0.28);
+                        r_div = (r_div * 1.25).min(255.0);
+                        g_div = (g_div * 0.82).min(255.0);
+                        b_div = (b_div * 0.82).min(255.0);
+                    } else if luma >= 200.0 {
+                        // Paper background: smooth, uniform roll-off to pure white across the entire sheet
+                        let f = ((luma - 200.0) / 45.0).clamp(0.0, 1.0);
+                        let w_factor = f.powf(0.55);
+                        r_div = (r_div + (255.0 - r_div) * w_factor).min(255.0);
+                        g_div = (g_div + (255.0 - g_div) * w_factor).min(255.0);
+                        b_div = (b_div + (255.0 - b_div) * w_factor).min(255.0);
+                        if luma >= 225.0 {
+                            r_div = 255.0;
+                            g_div = 255.0;
+                            b_div = 255.0;
+                        }
+                    } else if luma < 178.0 {
+                        // Text & ink: deepen contrast so text is dark, bold and sharp
+                        let d_factor = (luma / 178.0).powf(0.36);
                         r_div *= d_factor;
                         g_div *= d_factor;
                         b_div *= d_factor;
@@ -369,19 +374,24 @@ pub fn apply_scan_filter(
 
                     if is_red_seal {
                         // High-fidelity scarlet red seal enhancement
-                        r_div = (r_div * 1.25).min(255.0);
-                        g_div = (g_div * 0.82).min(255.0);
-                        b_div = (b_div * 0.82).min(255.0);
-                    } else if luma >= 180.0 {
+                        r_div = (r_div * 1.30).min(255.0);
+                        g_div = (g_div * 0.78).min(255.0);
+                        b_div = (b_div * 0.78).min(255.0);
+                    } else if luma >= 195.0 {
                         // Professional pure paper white roll-off
-                        let f = ((luma - 180.0) / 75.0).clamp(0.0, 1.0);
-                        let w_factor = f.powf(1.4);
-                        r_div = r_div + (255.0 - r_div) * w_factor;
-                        g_div = g_div + (255.0 - g_div) * w_factor;
-                        b_div = b_div + (255.0 - b_div) * w_factor;
-                    } else {
+                        let f = ((luma - 195.0) / 45.0).clamp(0.0, 1.0);
+                        let w_factor = f.powf(0.55);
+                        r_div = (r_div + (255.0 - r_div) * w_factor).min(255.0);
+                        g_div = (g_div + (255.0 - g_div) * w_factor).min(255.0);
+                        b_div = (b_div + (255.0 - b_div) * w_factor).min(255.0);
+                        if luma >= 220.0 {
+                            r_div = 255.0;
+                            g_div = 255.0;
+                            b_div = 255.0;
+                        }
+                    } else if luma < 178.0 {
                         // Deep black laser ink
-                        let d_factor = (luma / 180.0).powf(0.50);
+                        let d_factor = (luma / 178.0).powf(0.40);
                         r_div *= d_factor;
                         g_div *= d_factor;
                         b_div *= d_factor;

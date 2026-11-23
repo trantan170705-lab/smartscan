@@ -15,6 +15,7 @@ import {
   clearAllExportHistory,
   ExportHistoryItem,
 } from '../../db/exportHistory';
+import { sharePdfDocument } from '../../utils/shareService';
 import { useLanguage } from '../../hooks/useLanguage';
 
 interface ExportHistoryModalProps {
@@ -60,29 +61,7 @@ export const ExportHistoryModal: React.FC<ExportHistoryModalProps> = ({ isOpen, 
   };
 
   const handleShare = async (item: ExportHistoryItem) => {
-    const file = new File([item.pdfBlob], item.fileName, { type: 'application/pdf' });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      try {
-        await navigator.share({
-          files: [file],
-          title: item.fileName,
-          text: isVi ? 'Tài liệu scan từ SmartScan' : 'Scanned document from SmartScan',
-        });
-        showToast(isVi ? 'Đã mở bảng chia sẻ ứng dụng' : 'Share sheet opened');
-      } catch (err: unknown) {
-        if ((err as Error).name !== 'AbortError') {
-          handleDownload(item);
-        }
-      }
-    } else {
-      // Fallback: download and instruct user to share to Zalo
-      handleDownload(item);
-      showToast(
-        isVi
-          ? 'Tệp đã được tải về máy. Bạn có thể mở Zalo và gửi tệp vừa tải!'
-          : 'File downloaded. You can now open Zalo/messaging apps and attach it!'
-      );
-    }
+    await sharePdfDocument(item.pdfBlob, item.fileName, (msg: string) => showToast(msg));
   };
 
   const handleDelete = async (id: string) => {

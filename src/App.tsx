@@ -41,6 +41,10 @@ export const App: React.FC = () => {
   const [ocrTargetPage, setOcrTargetPage] = useState<VaultPage | null>(null);
   const [isAutoOcrOnCapture, setIsAutoOcrOnCapture] = useState<boolean>(false);
 
+  // Keep pagesRef always in sync with pages state
+  const pagesRef = useRef<VaultPage[]>(pages);
+  pagesRef.current = pages;
+
   const { detectQuad, warpPerspective, applyFilter, encodeJpeg, generatePdf, wasmReady } =
     useScannerWorker();
 
@@ -157,12 +161,13 @@ export const App: React.FC = () => {
         const fileArr = Array.from(files).filter((f) => f.type.startsWith('image/'));
         const newPages: VaultPage[] = [];
 
+        const currentPages = pagesRef.current;
         for (let i = 0; i < fileArr.length; i++) {
           const processed = await processImageFile(fileArr[i]);
           const newPage: VaultPage = {
             id: 'page_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
             docId: 'doc_primary',
-            pageNumber: pages.length + i + 1,
+            pageNumber: currentPages.length + i + 1,
             createdAt: Date.now(),
             originalBlob: processed.blob,
             quad: processed.quad,
@@ -178,14 +183,12 @@ export const App: React.FC = () => {
           newPages.push(newPage);
         }
 
-        let targetIdx = 0;
-        setPages((prev) => {
-          const next = [...prev, ...newPages];
-          targetIdx = next.length - 1;
-          return next;
-        });
-        setActivePageIndex(targetIdx);
-        setViewMode('studio');
+        if (newPages.length > 0) {
+          const nextPages = [...currentPages, ...newPages];
+          setPages(nextPages);
+          setActivePageIndex(nextPages.length - 1);
+          setViewMode('studio');
+        }
 
         if (isAutoOcrOnCapture && newPages.length > 0) {
           setIsAutoOcrOnCapture(false);
@@ -209,10 +212,11 @@ export const App: React.FC = () => {
       height: number;
       quad: [number, number, number, number, number, number, number, number];
     }) => {
+      const currentPages = pagesRef.current;
       const newPage: VaultPage = {
         id: 'page_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
         docId: 'doc_primary',
-        pageNumber: pages.length + 1,
+        pageNumber: currentPages.length + 1,
         createdAt: Date.now(),
         originalBlob: captured.blob,
         quad: captured.quad,
@@ -226,13 +230,9 @@ export const App: React.FC = () => {
       };
 
       await saveVaultPage(newPage);
-      let targetIdx = 0;
-      setPages((prev) => {
-        const next = [...prev, newPage];
-        targetIdx = next.length - 1;
-        return next;
-      });
-      setActivePageIndex(targetIdx);
+      const nextPages = [...currentPages, newPage];
+      setPages(nextPages);
+      setActivePageIndex(nextPages.length - 1);
       setViewMode('studio');
 
       if (isAutoOcrOnCapture) {
@@ -244,12 +244,14 @@ export const App: React.FC = () => {
     [pages.length, isAutoOcrOnCapture]
   );
 
-  // Non-destructive page updates
+  // Non-destructive page updates (optimistic 0ms UI update + async DB persist)
   const handleUpdatePage = useCallback(
-    async (id: string, updates: Partial<VaultPage>) => {
-      await updateVaultPage(id, updates);
+    (id: string, updates: Partial<VaultPage>) => {
       setPages((prev) =>
         prev.map((p) => (p.id === id ? { ...p, ...updates } : p))
+      );
+      updateVaultPage(id, updates).catch((err) =>
+        console.error('Failed to persist page update:', err)
       );
     },
     []

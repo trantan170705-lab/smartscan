@@ -95,24 +95,80 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
   // Completely eliminates re-warping and re-processing when switching between pages!
   const previewCacheRef = useRef<Map<string, { url: string; sig: string; blob: Blob }>>(new Map());
 
+  // Render cancellation token and active page tracker to prevent desync
+  const renderRequestIdRef = useRef<number>(0);
+  const activePageIdRef = useRef<string>(activePage?.id || '');
+  activePageIdRef.current = activePage?.id || '';
+
+  // Warped buffer cache: preserves warped RGBA in memory so adjusting contrast, brightness, or filter mode
+  // only takes ~10ms (skipping redundant multi-megapixel homography warp and image decode entirely)
+  const warpedCacheRef = useRef<{
+    id: string;
+    quadSig: string;
+    data: Uint8Array;
+    width: number;
+    height: number;
+  } | null>(null);
+
+  // Local state for contrast & brightness for 60fps instant UI updates
+  const [localContrast, setLocalContrast] = useState<number>(activePage?.contrast ?? 1.0);
+  const [localBrightness, setLocalBrightness] = useState<number>(activePage?.brightness ?? 0.0);
+  const debouncedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Keep local sliders synchronized with activePage
+  useEffect(() => {
+    if (activePage) {
+      setLocalContrast(activePage.contrast);
+      setLocalBrightness(activePage.brightness);
+    }
+  }, [activePage?.id, activePage?.contrast, activePage?.brightness]);
+
+  // Debounced update to commit to IndexedDB and trigger background WASM filter
+  const handleSliderChange = useCallback(
+    (contrast: number, brightness: number) => {
+      setLocalContrast(contrast);
+      setLocalBrightness(brightness);
+
+      if (debouncedTimerRef.current) {
+        clearTimeout(debouncedTimerRef.current);
+      }
+
+      debouncedTimerRef.current = setTimeout(() => {
+        if (activePage) {
+          onUpdatePage(activePage.id, { contrast, brightness });
+        }
+      }, 140);
+    },
+    [activePage, onUpdatePage]
+  );
+
   // Reset pan offset whenever page switches
   useEffect(() => {
     setPanOffset({ x: 0, y: 0 });
   }, [activePage?.id]);
 
   // Immediate preview synchronization on page switch (0ms delay)
+  const prevPageIdRef = useRef<string>('');
   useEffect(() => {
     if (!activePage) {
       setActivePreviewUrl('');
+      prevPageIdRef.current = '';
       return;
     }
+    const isNewPage = prevPageIdRef.current !== activePage.id;
+    prevPageIdRef.current = activePage.id;
+
     const cached = previewCacheRef.current.get(activePage.id);
     const quadSig = activePage.quad.map((n) => Math.round(n)).join(',');
     const currentSig = `${activePage.id}_${quadSig}_${activePage.filterMode}_${activePage.contrast}_${activePage.brightness}_${activePage.rotation}`;
 
     if (cached && cached.sig === currentSig) {
       setActivePreviewUrl(cached.url);
+    } else if (isNewPage) {
+      // Switched to a different page that isn't cached yet: clear old page's preview
+      setActivePreviewUrl('');
     }
+    // When changing filter on the SAME page, do NOT clear activePreviewUrl (no black loading screen!)
   }, [activePage?.id, activePage?.quad, activePage?.filterMode, activePage?.contrast, activePage?.brightness, activePage?.rotation]);
 
   // Keep rawBlobUrl in sync with activePage.originalBlob
@@ -132,13 +188,15 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
   const updateProcessedPreview = useCallback(async () => {
     if (!activePage) return;
 
+    const targetPageId = activePage.id;
+    const thisReqId = ++renderRequestIdRef.current;
     const quadSig = activePage.quad.map((n) => Math.round(n)).join(',');
-    const currentSig = `${activePage.id}_${quadSig}_${activePage.filterMode}_${activePage.contrast}_${activePage.brightness}_${activePage.rotation}`;
+    const currentSig = `${targetPageId}_${quadSig}_${activePage.filterMode}_${activePage.contrast}_${activePage.brightness}_${activePage.rotation}`;
 
     // 1. Check if already cached in memory Map
-    const cached = previewCacheRef.current.get(activePage.id);
+    const cached = previewCacheRef.current.get(targetPageId);
     if (cached && cached.sig === currentSig) {
-      if (activePreviewUrl !== cached.url) {
+      if (activePageIdRef.current === targetPageId) {
         setActivePreviewUrl(cached.url);
       }
       return;
@@ -146,59 +204,102 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
 
     setIsReprocessing(true);
     try {
-      // 1. Decode originalBlob to ImageData
-      const img = new Image();
-      const objUrl = URL.createObjectURL(activePage.originalBlob);
-      await new Promise((res, rej) => {
-        img.onload = res;
-        img.onerror = rej;
-        img.src = objUrl;
-      });
-      URL.revokeObjectURL(objUrl);
+      let warpedWidth = 0;
+      let warpedHeight = 0;
+      let warpedData: Uint8Array;
 
-      const canvas = document.createElement('canvas');
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      if (!ctx) return;
+      // Check if we can reuse the cached warped buffer for this page & quad
+      if (
+        warpedCacheRef.current &&
+        warpedCacheRef.current.id === targetPageId &&
+        warpedCacheRef.current.quadSig === quadSig
+      ) {
+        warpedWidth = warpedCacheRef.current.width;
+        warpedHeight = warpedCacheRef.current.height;
+        warpedData = warpedCacheRef.current.data;
+      } else {
+        // 1. Decode originalBlob to ImageData
+        const img = new Image();
+        const objUrl = URL.createObjectURL(activePage.originalBlob);
+        await new Promise((res, rej) => {
+          img.onload = res;
+          img.onerror = rej;
+          img.src = objUrl;
+        });
+        URL.revokeObjectURL(objUrl);
 
-      ctx.drawImage(img, 0, 0);
-      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const rawRgba = new Uint8Array(imgData.data.buffer);
+        // Cancel if page changed while decoding
+        if (renderRequestIdRef.current !== thisReqId || activePageIdRef.current !== targetPageId) {
+          return;
+        }
 
-      // Memory hygiene: free canvas
-      canvas.width = 0;
-      canvas.height = 0;
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return;
 
-      // 2. Warp Perspective using pure Rust WASM
-      const warped = await warpPerspective(
-        rawRgba,
-        imgData.width,
-        imgData.height,
-        activePage.quad
-      );
+        ctx.drawImage(img, 0, 0);
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const rawRgba = new Uint8Array(imgData.data.buffer);
 
-      // 3. Apply Filter using WASM
+        // Memory hygiene: free canvas
+        canvas.width = 0;
+        canvas.height = 0;
+
+        // 2. Warp Perspective using pure Rust WASM (includes automatic content line straightening)
+        const warped = await warpPerspective(
+          rawRgba,
+          imgData.width,
+          imgData.height,
+          activePage.quad
+        );
+
+        // Cancel if page changed during warp
+        if (renderRequestIdRef.current !== thisReqId || activePageIdRef.current !== targetPageId) {
+          return;
+        }
+
+        warpedWidth = warped.width;
+        warpedHeight = warped.height;
+        warpedData = warped.data;
+
+        // Cache warped buffer for instant slider tweaks
+        warpedCacheRef.current = {
+          id: targetPageId,
+          quadSig,
+          data: warpedData,
+          width: warpedWidth,
+          height: warpedHeight,
+        };
+      }
+
+      // 3. Apply Filter using WASM directly on the warped buffer (~10ms)
       const filtered = await applyFilter(
-        warped.data,
-        warped.width,
-        warped.height,
+        warpedData,
+        warpedWidth,
+        warpedHeight,
         activePage.filterMode,
         activePage.contrast,
         activePage.brightness
       );
 
+      // Cancel if page changed during filter
+      if (renderRequestIdRef.current !== thisReqId || activePageIdRef.current !== targetPageId) {
+        return;
+      }
+
       // 4. Render to Blob
       const outCanvas = document.createElement('canvas');
-      outCanvas.width = warped.width;
-      outCanvas.height = warped.height;
+      outCanvas.width = warpedWidth;
+      outCanvas.height = warpedHeight;
       const outCtx = outCanvas.getContext('2d');
       if (!outCtx) return;
 
       const outImgData = new ImageData(
         new Uint8ClampedArray(filtered.data.buffer as ArrayBuffer),
-        warped.width,
-        warped.height
+        warpedWidth,
+        warpedHeight
       );
       outCtx.putImageData(outImgData, 0, 0);
 
@@ -207,20 +308,22 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
           outCanvas.width = 0;
           outCanvas.height = 0;
           if (blob) {
+            // Discard if user already switched away from this page
+            if (renderRequestIdRef.current !== thisReqId || activePageIdRef.current !== targetPageId) {
+              return;
+            }
             // Revoke old URL for THIS page if it existed
-            const old = previewCacheRef.current.get(activePage.id);
+            const old = previewCacheRef.current.get(targetPageId);
             if (old && old.url) {
               URL.revokeObjectURL(old.url);
             }
             const newUrl = URL.createObjectURL(blob);
-            previewCacheRef.current.set(activePage.id, {
+            previewCacheRef.current.set(targetPageId, {
               url: newUrl,
               sig: currentSig,
               blob,
             });
             setActivePreviewUrl(newUrl);
-            // Update processed thumbnail for filmstrip
-            onUpdatePage(activePage.id, { processedThumbnailBlob: blob });
           }
         },
         'image/jpeg',
@@ -229,9 +332,11 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
     } catch (e) {
       console.error('Error reprocessing page in WASM:', e);
     } finally {
-      setIsReprocessing(false);
+      if (renderRequestIdRef.current === thisReqId) {
+        setIsReprocessing(false);
+      }
     }
-  }, [activePage, activePreviewUrl, warpPerspective, applyFilter, onUpdatePage]);
+  }, [activePage, warpPerspective, applyFilter]);
 
   // Trigger reprocessing whenever page parameters change
   useEffect(() => {
@@ -332,6 +437,14 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
     { mode: 3, name: t.filterBw, cssFilter: 'grayscale(100%) contrast(1.5) brightness(1.1)' },
   ];
 
+  // Live hardware-accelerated CSS preview during slider dragging
+  const contrastRatio = activePage?.contrast ? localContrast / activePage.contrast : 1.0;
+  const brightnessDiff = activePage ? (localBrightness - activePage.brightness) / 100.0 : 0.0;
+  const livePreviewFilter =
+    Math.abs(contrastRatio - 1.0) > 0.01 || Math.abs(brightnessDiff) > 0.005
+      ? `contrast(${contrastRatio}) brightness(${1.0 + brightnessDiff})`
+      : 'none';
+
   return (
     <div className="relative w-full h-full flex flex-col bg-[var(--bg-void)] select-none overflow-hidden">
       {/* ======================================================== */}
@@ -408,6 +521,7 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
                     style={{
                       transform: isComparing ? 'none' : `rotate(${activePage.rotation}deg)`,
                       transition: isRotating ? 'transform 150ms var(--ease-mechanical)' : 'none',
+                      filter: isComparing ? 'none' : livePreviewFilter,
                     }}
                     className="max-h-[56vh] max-w-[90vw] object-contain shadow-md rounded-[2px] border border-[var(--border-hairline)] select-none pointer-events-none"
                   />
@@ -592,7 +706,10 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => onUpdatePage(activePage.id, { contrast: 1.0, brightness: 0.0 })}
+                  onClick={() => {
+                    handleSliderChange(1.0, 0.0);
+                    onUpdatePage(activePage.id, { contrast: 1.0, brightness: 0.0 });
+                  }}
                   className="flex items-center gap-1 px-1.5 py-0.5 rounded-[2px] bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--border-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)] text-[9px] font-mono cursor-pointer"
                 >
                   <RotateCcw size={10} strokeWidth={1.5} />
@@ -612,15 +729,15 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
             <div>
               <div className="flex justify-between font-mono text-[11px] mb-1">
                 <span className="text-[var(--text-muted)]">{t.contrastLabel}</span>
-                <span className="text-[var(--text-primary)] font-bold">{activePage.contrast.toFixed(1)}x</span>
+                <span className="text-[var(--text-primary)] font-bold">{localContrast.toFixed(1)}x</span>
               </div>
               <input
                 type="range"
                 min="0.5"
                 max="2.0"
-                step="0.1"
-                value={activePage.contrast}
-                onChange={(e) => onUpdatePage(activePage.id, { contrast: parseFloat(e.target.value) })}
+                step="0.05"
+                value={localContrast}
+                onChange={(e) => handleSliderChange(parseFloat(e.target.value), localBrightness)}
                 className="w-full"
               />
             </div>
@@ -630,16 +747,16 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
               <div className="flex justify-between font-mono text-[11px] mb-1">
                 <span className="text-[var(--text-muted)]">{t.brightnessLabel}</span>
                 <span className="text-[var(--text-primary)] font-bold">
-                  {activePage.brightness > 0 ? `+${activePage.brightness}` : activePage.brightness}
+                  {localBrightness > 0 ? `+${Math.round(localBrightness)}` : Math.round(localBrightness)}
                 </span>
               </div>
               <input
                 type="range"
                 min="-50"
                 max="50"
-                step="5"
-                value={activePage.brightness}
-                onChange={(e) => onUpdatePage(activePage.id, { brightness: parseFloat(e.target.value) })}
+                step="2"
+                value={localBrightness}
+                onChange={(e) => handleSliderChange(localContrast, parseFloat(e.target.value))}
                 className="w-full"
               />
             </div>
@@ -890,6 +1007,7 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
                     style={{
                       transform: `rotate(${activePage.rotation}deg)`,
                       transition: isRotating ? 'transform 150ms var(--ease-mechanical)' : 'none',
+                      filter: livePreviewFilter,
                     }}
                     className="max-h-[68vh] max-w-[55vw] object-contain shadow-lg rounded-[2px] pointer-events-none select-none"
                   />
@@ -1024,7 +1142,10 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
                     </div>
                     <button
                       type="button"
-                      onClick={() => onUpdatePage(activePage.id, { contrast: 1.0, brightness: 0.0 })}
+                      onClick={() => {
+                        handleSliderChange(1.0, 0.0);
+                        onUpdatePage(activePage.id, { contrast: 1.0, brightness: 0.0 });
+                      }}
                       title={t.resetSlidersButton}
                       className="flex items-center gap-1 px-1.5 py-0.5 rounded-[2px] bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--border-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer text-[9px] font-mono tracking-wider transition-colors active:scale-95"
                     >
@@ -1037,15 +1158,15 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
                   <div>
                     <div className="flex justify-between font-mono text-[11px] mb-1">
                       <span className="text-[var(--text-muted)]">{t.contrastLabel}</span>
-                      <span className="text-[var(--text-primary)]">{activePage.contrast.toFixed(1)}x</span>
+                      <span className="text-[var(--text-primary)] font-bold">{localContrast.toFixed(1)}x</span>
                     </div>
                     <input
                       type="range"
                       min="0.5"
                       max="2.0"
-                      step="0.1"
-                      value={activePage.contrast}
-                      onChange={(e) => onUpdatePage(activePage.id, { contrast: parseFloat(e.target.value) })}
+                      step="0.05"
+                      value={localContrast}
+                      onChange={(e) => handleSliderChange(parseFloat(e.target.value), localBrightness)}
                       className="w-full"
                     />
                   </div>
@@ -1054,17 +1175,17 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
                   <div>
                     <div className="flex justify-between font-mono text-[11px] mb-1">
                       <span className="text-[var(--text-muted)]">{t.brightnessLabel}</span>
-                      <span className="text-[var(--text-primary)]">
-                        {activePage.brightness > 0 ? `+${activePage.brightness}` : activePage.brightness}
+                      <span className="text-[var(--text-primary)] font-bold">
+                        {localBrightness > 0 ? `+${Math.round(localBrightness)}` : Math.round(localBrightness)}
                       </span>
                     </div>
                     <input
                       type="range"
                       min="-50"
                       max="50"
-                      step="5"
-                      value={activePage.brightness}
-                      onChange={(e) => onUpdatePage(activePage.id, { brightness: parseFloat(e.target.value) })}
+                      step="2"
+                      value={localBrightness}
+                      onChange={(e) => handleSliderChange(localContrast, parseFloat(e.target.value))}
                       className="w-full"
                     />
                   </div>

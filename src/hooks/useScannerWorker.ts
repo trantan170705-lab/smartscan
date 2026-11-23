@@ -165,7 +165,7 @@ export function useScannerWorker() {
     [sendRequest]
   );
 
-  // 3. Apply Filter (Zero-Copy Transfer)
+  // 3. Apply Filter (Zero-Copy Transfer with Buffer Protection for warpedCacheRef)
   const applyFilter = useCallback(
     async (
       rgba: Uint8Array,
@@ -176,10 +176,12 @@ export function useScannerWorker() {
       brightness: number
     ): Promise<{ data: Uint8Array; width: number; height: number; timeMs: number }> => {
       const id = 'filt_' + Math.random().toString(36).slice(2, 9);
+      // Copy slice so the caller's cached warped buffer is never neutered/detached by worker transfer
+      const copy = new Uint8Array(rgba);
       const res = await sendRequest<Extract<WorkerResponse, { type: 'APPLY_FILTER_RESULT' }>>(
-        { id, type: 'APPLY_FILTER', rgba, width, height, mode, contrast, brightness },
+        { id, type: 'APPLY_FILTER', rgba: copy, width, height, mode, contrast, brightness },
         'APPLY_FILTER',
-        [rgba.buffer]
+        [copy.buffer]
       );
       return { data: res.data, width: res.width, height: res.height, timeMs: res.timeMs };
     },

@@ -16,13 +16,12 @@ pub fn estimate_text_tilt_angle(rgba: &[u8], width: u32, height: u32) -> f32 {
     if width < 50 || height < 50 {
         return 0.0;
     }
-    // 1. Downscale to small thumbnail height 240px for fast evaluation (< 3ms)
-    let target_h = 240u32.min(height);
+    // 1. Downscale to evaluation height 360px for fast evaluation and crisp text baselines
+    let target_h = 360u32.min(height);
     let scale = height as f32 / target_h as f32;
     let target_w = ((width as f32) / scale).round().max(10.0) as u32;
 
     let mut small_gray = vec![0u8; (target_w * target_h) as usize];
-    let mut sum_luma = 0u64;
     for y in 0..target_h {
         let sy = ((y as f32) * scale).min((height - 1) as f32) as u32;
         let row_off = (y * target_w) as usize;
@@ -31,36 +30,41 @@ pub fn estimate_text_tilt_angle(rgba: &[u8], width: u32, height: u32) -> f32 {
             let idx = ((sy * width + sx) * 4) as usize;
             let luma = (0.299 * rgba[idx] as f32 + 0.587 * rgba[idx + 1] as f32 + 0.114 * rgba[idx + 2] as f32) as u8;
             small_gray[row_off + x as usize] = luma;
-            sum_luma += luma as u64;
         }
     }
 
-    // Adaptive threshold: text is 1, background is 0
-    let avg_luma = (sum_luma / (target_w * target_h) as u64) as u8;
-    let text_thresh = avg_luma.saturating_sub(18);
-    let mut binary = vec![0u8; (target_w * target_h) as usize];
-    let mut text_count = 0;
-    for i in 0..binary.len() {
-        if small_gray[i] < text_thresh {
-            binary[i] = 1;
-            text_count += 1;
+    // 2. Extract vertical gradient differences for text line detection (Sobel-like difference: |pixel[y+1] - pixel[y-1]|)
+    // Horizontal text lines produce strong, localized vertical transitions
+    let mut grad_vert = vec![0u8; (target_w * target_h) as usize];
+    for y in 1..(target_h - 1) {
+        let row_curr = (y * target_w) as usize;
+        let row_prev = ((y - 1) * target_w) as usize;
+        let row_next = ((y + 1) * target_w) as usize;
+        for x in 0..target_w {
+            let p_prev = small_gray[row_prev + x as usize] as i32;
+            let p_next = small_gray[row_next + x as usize] as i32;
+            let diff = (p_next - p_prev).abs();
+            if diff >= 12 {
+                grad_vert[row_curr + x as usize] = 1;
+            }
         }
     }
 
-    // Require enough text pixels to reliably estimate tilt (at least 1.5% of pixels)
-    if text_count < (target_w * target_h / 65) as usize {
+    // Require enough text edge pixels to reliably estimate tilt
+    let edge_count: usize = grad_vert.iter().map(|&v| v as usize).sum();
+    if edge_count < (target_w * target_h / 120) as usize {
         return 0.0;
     }
 
-    // Test candidate angles from -8.0° to +8.0° in steps of 0.20°
+    // Test candidate angles from -7.05° to +7.05° in steps of 0.15°
     let mut best_angle = 0.0f32;
     let mut max_variance = 0.0f32;
     let center_x = target_w as f32 / 2.0;
     let center_y = target_h as f32 / 2.0;
 
-    let steps = 81; // -8.0 to +8.0 in 0.20 steps
+    let steps = 95; // -7.05 to +7.05 in 0.15 steps
     for s in 0..steps {
-        let ang_deg = -8.0 + (s as f32) * 0.20;
+        let ang_deg = -7.05 + (s as f32) * 0.15;
         let rad = ang_deg.to_radians();
         let cos_a = rad.cos();
         let sin_a = rad.sin();
@@ -68,8 +72,9 @@ pub fn estimate_text_tilt_angle(rgba: &[u8], width: u32, height: u32) -> f32 {
         let mut row_sums = vec![0.0f32; target_h as usize];
         for y in 0..target_h {
             let dy = y as f32 - center_y;
+            let row_off = (y * target_w) as usize;
             for x in 0..target_w {
-                if binary[(y * target_w + x) as usize] == 1 {
+                if grad_vert[row_off + x as usize] == 1 {
                     let dx = x as f32 - center_x;
                     let rot_y = (-dx * sin_a + dy * cos_a + center_y).round() as i32;
                     if rot_y >= 0 && rot_y < target_h as i32 {
@@ -157,8 +162,12 @@ pub fn warp_perspective_core(
     let raw_dest = dest_img.as_raw();
     let tilt_angle = estimate_text_tilt_angle(raw_dest, out_w, out_h);
 
-    if tilt_angle.abs() >= 0.35 && tilt_angle.abs() <= 8.0 {
-        let rad = tilt_angle.to_radians();
+    // Apply deskew rotation if significant tilt detected
+    let final_img = if tilt_angle.abs() >= 0.18 && tilt_angle.abs() <= 7.5 {
+        // The Radon projection returns the ALIGNMENT angle: e.g. -3° means rotating pixels
+        // by -3° makes text horizontal. To correct the image we must rotate the OUTPUT by
+        // +tilt_angle. Backward mapping rotates sample coordinates by -tilt_angle:
+        let rad = (-tilt_angle).to_radians();
         let cos_a = rad.cos();
         let sin_a = rad.sin();
         let cx = out_w as f32 / 2.0;
@@ -214,10 +223,46 @@ pub fn warp_perspective_core(
                 }
             }
         }
-        return Ok((deskewed.into_raw(), out_w, out_h));
+        deskewed
+    } else {
+        dest_img
+    };
+
+    // 4. BƯỚC 3: Edge-aware border whitening (CamScanner desk cleanup)
+    // Fade non-white pixels near the 4 edges to pure white to remove desk/paper artifacts
+    let final_raw = final_img.into_raw();
+    let mut cleaned = final_raw;
+    let margin_x = ((out_w as f32) * 0.025).max(6.0);
+    let margin_y = ((out_h as f32) * 0.025).max(6.0);
+
+    for y in 0..out_h {
+        let dist_y = (y as f32).min((out_h - 1 - y) as f32);
+        for x in 0..out_w {
+            let dist_x = (x as f32).min((out_w - 1 - x) as f32);
+            let edge_dist = dist_x.min(dist_y);
+            let margin = margin_x.min(margin_y);
+
+            if edge_dist < margin {
+                let idx = ((y * out_w + x) * 4) as usize;
+                let r = cleaned[idx] as f32;
+                let g = cleaned[idx + 1] as f32;
+                let b = cleaned[idx + 2] as f32;
+                let luma = 0.299 * r + 0.587 * g + 0.114 * b;
+
+                // Only fade dark-ish pixels (desk wood, paper edges) — keep text untouched
+                if luma < 180.0 {
+                    let blend = (edge_dist / margin).clamp(0.0, 1.0);
+                    // Smooth cubic ease for natural feathering
+                    let blend_smooth = blend * blend * (3.0 - 2.0 * blend);
+                    cleaned[idx] = (r * blend_smooth + 255.0 * (1.0 - blend_smooth)).round() as u8;
+                    cleaned[idx + 1] = (g * blend_smooth + 255.0 * (1.0 - blend_smooth)).round() as u8;
+                    cleaned[idx + 2] = (b * blend_smooth + 255.0 * (1.0 - blend_smooth)).round() as u8;
+                }
+            }
+        }
     }
 
-    Ok((dest_img.into_raw(), out_w, out_h))
+    Ok((cleaned, out_w, out_h))
 }
 
 #[cfg(test)]
