@@ -107,21 +107,13 @@ export const AdaptiveStudio: React.FC<AdaptiveStudioProps> = ({
       return;
     }
     const cached = previewCacheRef.current.get(activePage.id);
-    if (cached) {
+    const quadSig = activePage.quad.map((n) => Math.round(n)).join(',');
+    const currentSig = `${activePage.id}_${quadSig}_${activePage.filterMode}_${activePage.contrast}_${activePage.brightness}_${activePage.rotation}`;
+
+    if (cached && cached.sig === currentSig) {
       setActivePreviewUrl(cached.url);
-    } else if (activePage.processedThumbnailBlob && activePage.processedThumbnailBlob !== activePage.originalBlob) {
-      // If we have a cached processed blob from previous edit or export, immediately display it without reloading!
-      const url = URL.createObjectURL(activePage.processedThumbnailBlob);
-      const quadSig = activePage.quad.map((n) => Math.round(n)).join(',');
-      const currentSig = `${activePage.id}_${quadSig}_${activePage.filterMode}_${activePage.contrast}_${activePage.brightness}_${activePage.rotation}`;
-      previewCacheRef.current.set(activePage.id, {
-        url,
-        sig: currentSig,
-        blob: activePage.processedThumbnailBlob,
-      });
-      setActivePreviewUrl(url);
     }
-  }, [activePage?.id, activePage?.processedThumbnailBlob, activePage?.originalBlob]);
+  }, [activePage?.id, activePage?.quad, activePage?.filterMode, activePage?.contrast, activePage?.brightness, activePage?.rotation]);
 
   // Keep rawBlobUrl in sync with activePage.originalBlob
   useEffect(() => {

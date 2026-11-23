@@ -21,6 +21,7 @@ import { QuadEditor } from './components/editor/QuadEditor';
 import { AdaptiveStudio } from './components/studio/AdaptiveStudio';
 import { ExportHistoryModal } from './components/common/ExportHistoryModal';
 import { TextExtractionModal } from './components/common/TextExtractionModal';
+import { PwaInstallBanner } from './components/common/PwaInstallBanner';
 
 export const App: React.FC = () => {
   const [pages, setPages] = useState<VaultPage[]>([]);
@@ -329,12 +330,16 @@ export const App: React.FC = () => {
   const handleConfirmRecrop = useCallback(
     async (finalQuad: [number, number, number, number, number, number, number, number]) => {
       if (recropPageId) {
-        await handleUpdatePage(recropPageId, { quad: finalQuad });
+        const targetPage = pages.find((p) => p.id === recropPageId);
+        await handleUpdatePage(recropPageId, {
+          quad: finalQuad,
+          processedThumbnailBlob: targetPage?.originalBlob,
+        });
         setRecropPageId(null);
         setViewMode('studio');
       }
     },
-    [recropPageId, handleUpdatePage]
+    [recropPageId, pages, handleUpdatePage]
   );
 
   // Move / Reorder pages
@@ -616,83 +621,88 @@ export const App: React.FC = () => {
   const recropTargetPage = pages.find((p) => p.id === recropPageId);
 
   return (
-    <div className="w-full h-full bg-[var(--bg-void)] text-[var(--text-primary)] overflow-hidden">
-      {/* 1. Camera Viewfinder View */}
-      {viewMode === 'camera' && (
-        <LiveViewfinder
-          onCapture={handleCameraCapture}
-          onImportFiles={handleImportFiles}
-          onClose={() => setViewMode(pages.length > 0 ? 'studio' : 'vault')}
-          pageCount={pages.length}
-        />
-      )}
+    <div className="w-full h-full bg-[var(--bg-void)] text-[var(--text-primary)] overflow-hidden flex flex-col">
+      {/* 0. Top Sticky PWA Install Header */}
+      {viewMode !== 'camera' && viewMode !== 'editor' && <PwaInstallBanner />}
 
-      {/* 2. 4-Corner Crop Editor View */}
-      {viewMode === 'editor' && recropTargetPage && (
-        <QuadEditor
-          imageBlob={recropTargetPage.originalBlob}
-          initialQuad={recropTargetPage.quad}
-          width={recropTargetPage.originalWidth}
-          height={recropTargetPage.originalHeight}
-          onConfirm={handleConfirmRecrop}
-          onCancel={() => setViewMode('studio')}
-        />
-      )}
+      <div className="flex-1 w-full h-full overflow-hidden relative">
+        {/* 1. Camera Viewfinder View */}
+        {viewMode === 'camera' && (
+          <LiveViewfinder
+            onCapture={handleCameraCapture}
+            onImportFiles={handleImportFiles}
+            onClose={() => setViewMode(pages.length > 0 ? 'studio' : 'vault')}
+            pageCount={pages.length}
+          />
+        )}
 
-      {/* 3. Empty Vault / CamScanner Home View */}
-      {viewMode === 'vault' && (
-        <DocumentVault
-          onOpenViewfinder={() => setViewMode('camera')}
-          onImportFiles={handleImportFiles}
-          onOpenHistory={() => setIsHistoryOpen(true)}
-          onOpenStudio={() => setViewMode('studio')}
-          onSelectPage={setActivePageIndex}
-          onEditDocument={handleEditHistoryItem}
-          onTriggerExtractText={handleTriggerExtractText}
-          pages={pages}
-          isProcessing={isProcessingFiles}
-        />
-      )}
+        {/* 2. 4-Corner Crop Editor View */}
+        {viewMode === 'editor' && recropTargetPage && (
+          <QuadEditor
+            imageBlob={recropTargetPage.originalBlob}
+            initialQuad={recropTargetPage.quad}
+            width={recropTargetPage.originalWidth}
+            height={recropTargetPage.originalHeight}
+            onConfirm={handleConfirmRecrop}
+            onCancel={() => setViewMode('studio')}
+          />
+        )}
 
-      {/* 4. Adaptive Studio Workstation View */}
-      {viewMode === 'studio' && (
-        <AdaptiveStudio
-          pages={pages}
-          activePageIndex={activePageIndex}
+        {/* 3. Empty Vault / CamScanner Home View */}
+        {viewMode === 'vault' && (
+          <DocumentVault
+            onOpenViewfinder={() => setViewMode('camera')}
+            onImportFiles={handleImportFiles}
+            onOpenHistory={() => setIsHistoryOpen(true)}
+            onOpenStudio={() => setViewMode('studio')}
+            onSelectPage={setActivePageIndex}
+            onEditDocument={handleEditHistoryItem}
+            onTriggerExtractText={handleTriggerExtractText}
+            pages={pages}
+            isProcessing={isProcessingFiles}
+          />
+        )}
+
+        {/* 4. Adaptive Studio Workstation View */}
+        {viewMode === 'studio' && (
+          <AdaptiveStudio
+            pages={pages}
+            activePageIndex={activePageIndex}
+            docTitle={docTitle}
+            onUpdateDocTitle={setDocTitle}
+            onSelectPage={setActivePageIndex}
+            onUpdatePage={handleUpdatePage}
+            onApplyFilterToAll={handleApplyFilterToAll}
+            onMovePage={handleMovePage}
+            onDeletePage={handleDeletePage}
+            onRecropPage={handleOpenRecrop}
+            onAddPage={() => setViewMode('camera')}
+            onExportPdf={handleExportPdf}
+            onExportSingleJpeg={handleExportSingleJpeg}
+            onExtractText={handleOpenOcrModal}
+            onOpenHistory={() => setIsHistoryOpen(true)}
+            onBackToHome={() => setViewMode('vault')}
+            isExporting={isExporting}
+          />
+        )}
+
+        {/* 5. Export History Modal */}
+        <ExportHistoryModal
+          isOpen={isHistoryOpen}
+          onClose={() => setIsHistoryOpen(false)}
+        />
+
+        {/* 6. Precision OCR & Text Extraction Editor Modal */}
+        <TextExtractionModal
+          isOpen={isOcrModalOpen}
+          onClose={() => setIsOcrModalOpen(false)}
+          imageSource={ocrTargetPage ? (ocrTargetPage.processedThumbnailBlob || ocrTargetPage.originalBlob) : null}
+          thumbnailBlob={ocrTargetPage ? (ocrTargetPage.processedThumbnailBlob || ocrTargetPage.originalBlob) : undefined}
           docTitle={docTitle}
-          onUpdateDocTitle={setDocTitle}
-          onSelectPage={setActivePageIndex}
-          onUpdatePage={handleUpdatePage}
-          onApplyFilterToAll={handleApplyFilterToAll}
-          onMovePage={handleMovePage}
-          onDeletePage={handleDeletePage}
-          onRecropPage={handleOpenRecrop}
-          onAddPage={() => setViewMode('camera')}
-          onExportPdf={handleExportPdf}
-          onExportSingleJpeg={handleExportSingleJpeg}
-          onExtractText={handleOpenOcrModal}
-          onOpenHistory={() => setIsHistoryOpen(true)}
-          onBackToHome={() => setViewMode('vault')}
-          isExporting={isExporting}
+          initialText={ocrTargetPage?.extractedText || ''}
+          onSaveExtractedText={handleSavePageExtractedText}
         />
-      )}
-
-      {/* 5. Export History Modal */}
-      <ExportHistoryModal
-        isOpen={isHistoryOpen}
-        onClose={() => setIsHistoryOpen(false)}
-      />
-
-      {/* 6. Precision OCR & Text Extraction Editor Modal */}
-      <TextExtractionModal
-        isOpen={isOcrModalOpen}
-        onClose={() => setIsOcrModalOpen(false)}
-        imageSource={ocrTargetPage ? (ocrTargetPage.processedThumbnailBlob || ocrTargetPage.originalBlob) : null}
-        thumbnailBlob={ocrTargetPage ? (ocrTargetPage.processedThumbnailBlob || ocrTargetPage.originalBlob) : undefined}
-        docTitle={docTitle}
-        initialText={ocrTargetPage?.extractedText || ''}
-        onSaveExtractedText={handleSavePageExtractedText}
-      />
+      </div>
     </div>
   );
 };

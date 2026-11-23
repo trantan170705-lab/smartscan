@@ -16,8 +16,8 @@ pub fn estimate_text_tilt_angle(rgba: &[u8], width: u32, height: u32) -> f32 {
     if width < 50 || height < 50 {
         return 0.0;
     }
-    // 1. Downscale to small thumbnail height 180px for fast evaluation (< 3ms)
-    let target_h = 180u32.min(height);
+    // 1. Downscale to small thumbnail height 240px for fast evaluation (< 3ms)
+    let target_h = 240u32.min(height);
     let scale = height as f32 / target_h as f32;
     let target_w = ((width as f32) / scale).round().max(10.0) as u32;
 
@@ -37,7 +37,7 @@ pub fn estimate_text_tilt_angle(rgba: &[u8], width: u32, height: u32) -> f32 {
 
     // Adaptive threshold: text is 1, background is 0
     let avg_luma = (sum_luma / (target_w * target_h) as u64) as u8;
-    let text_thresh = avg_luma.saturating_sub(15);
+    let text_thresh = avg_luma.saturating_sub(18);
     let mut binary = vec![0u8; (target_w * target_h) as usize];
     let mut text_count = 0;
     for i in 0..binary.len() {
@@ -47,20 +47,20 @@ pub fn estimate_text_tilt_angle(rgba: &[u8], width: u32, height: u32) -> f32 {
         }
     }
 
-    // Require enough text pixels to reliably estimate tilt
-    if text_count < (target_w * target_h / 40) as usize {
+    // Require enough text pixels to reliably estimate tilt (at least 1.5% of pixels)
+    if text_count < (target_w * target_h / 65) as usize {
         return 0.0;
     }
 
-    // Test candidate angles from -6.0° to +6.0° in steps of 0.25°
+    // Test candidate angles from -8.0° to +8.0° in steps of 0.20°
     let mut best_angle = 0.0f32;
     let mut max_variance = 0.0f32;
     let center_x = target_w as f32 / 2.0;
     let center_y = target_h as f32 / 2.0;
 
-    let steps = 49; // -6.0 to +6.0 in 0.25 steps
+    let steps = 81; // -8.0 to +8.0 in 0.20 steps
     for s in 0..steps {
-        let ang_deg = -6.0 + (s as f32) * 0.25;
+        let ang_deg = -8.0 + (s as f32) * 0.20;
         let rad = ang_deg.to_radians();
         let cos_a = rad.cos();
         let sin_a = rad.sin();
@@ -151,49 +151,70 @@ pub fn warp_perspective_core(
         &mut dest_img,
     );
 
-    // 3. CamScanner Automatic Content Deskew (Làm thẳng nội dung tự động)
-    // Measure residual text line tilt angle
+    // 3. BƯỚC 2: Làm thẳng nội dung trên giấy sau khi cắt góc (CamScanner Content Deskew)
+    // Không làm thẳng 4 góc giấy (để bảo toàn 100% nội dung, không cắt phạm vào chữ).
+    // Phân tích góc nghiêng của các dòng chữ trên trang giấy đã cắt:
     let raw_dest = dest_img.as_raw();
     let tilt_angle = estimate_text_tilt_angle(raw_dest, out_w, out_h);
 
-    if tilt_angle.abs() >= 0.35 && tilt_angle.abs() <= 6.0 {
-        // Rotate dest_pts by -tilt_angle around center to produce perfectly horizontal text
-        let theta = (-tilt_angle).to_radians();
-        let cos_t = theta.cos();
-        let sin_t = theta.sin();
+    if tilt_angle.abs() >= 0.35 && tilt_angle.abs() <= 8.0 {
+        let rad = tilt_angle.to_radians();
+        let cos_a = rad.cos();
+        let sin_a = rad.sin();
         let cx = out_w as f32 / 2.0;
         let cy = out_h as f32 / 2.0;
 
-        let deskew_dest_pts: [(f32, f32); 4] = [
-            (
-                cos_t * (0.0 - cx) - sin_t * (0.0 - cy) + cx,
-                sin_t * (0.0 - cx) + cos_t * (0.0 - cy) + cy,
-            ),
-            (
-                cos_t * (out_w as f32 - cx) - sin_t * (0.0 - cy) + cx,
-                sin_t * (out_w as f32 - cx) + cos_t * (0.0 - cy) + cy,
-            ),
-            (
-                cos_t * (out_w as f32 - cx) - sin_t * (out_h as f32 - cy) + cx,
-                sin_t * (out_w as f32 - cx) + cos_t * (out_h as f32 - cy) + cy,
-            ),
-            (
-                cos_t * (0.0 - cx) - sin_t * (out_h as f32 - cy) + cx,
-                sin_t * (0.0 - cx) + cos_t * (out_h as f32 - cy) + cy,
-            ),
-        ];
+        let mut deskewed = RgbaImage::from_pixel(out_w, out_h, default_pixel);
+        let src_raw = dest_img.as_raw();
 
-        if let Some(deskew_proj) = Projection::from_control_points(src_pts, deskew_dest_pts) {
-            let mut deskewed_dest = RgbaImage::new(out_w, out_h);
-            warp_into(
-                &src_img,
-                &deskew_proj,
-                Interpolation::Bilinear,
-                default_pixel,
-                &mut deskewed_dest,
-            );
-            return Ok((deskewed_dest.into_raw(), out_w, out_h));
+        for y in 0..out_h {
+            let dy = y as f32 - cy;
+            for x in 0..out_w {
+                let dx = x as f32 - cx;
+                // Backward mapping: To rotate image by -tilt_angle, look up using +tilt_angle
+                let sx = cos_a * dx - sin_a * dy + cx;
+                let sy = sin_a * dx + cos_a * dy + cy;
+
+                if sx >= 0.0 && sx < (out_w - 1) as f32 && sy >= 0.0 && sy < (out_h - 1) as f32 {
+                    let x0 = sx.floor() as u32;
+                    let y0 = sy.floor() as u32;
+                    let x1 = x0 + 1;
+                    let y1 = y0 + 1;
+
+                    let fx = sx - x0 as f32;
+                    let fy = sy - y0 as f32;
+
+                    let idx00 = ((y0 * out_w + x0) * 4) as usize;
+                    let idx10 = ((y0 * out_w + x1) * 4) as usize;
+                    let idx01 = ((y1 * out_w + x0) * 4) as usize;
+                    let idx11 = ((y1 * out_w + x1) * 4) as usize;
+
+                    let w00 = (1.0 - fx) * (1.0 - fy);
+                    let w10 = fx * (1.0 - fy);
+                    let w01 = (1.0 - fx) * fy;
+                    let w11 = fx * fy;
+
+                    let r = (src_raw[idx00] as f32 * w00
+                        + src_raw[idx10] as f32 * w10
+                        + src_raw[idx01] as f32 * w01
+                        + src_raw[idx11] as f32 * w11)
+                        .round() as u8;
+                    let g = (src_raw[idx00 + 1] as f32 * w00
+                        + src_raw[idx10 + 1] as f32 * w10
+                        + src_raw[idx01 + 1] as f32 * w01
+                        + src_raw[idx11 + 1] as f32 * w11)
+                        .round() as u8;
+                    let b = (src_raw[idx00 + 2] as f32 * w00
+                        + src_raw[idx10 + 2] as f32 * w10
+                        + src_raw[idx01 + 2] as f32 * w01
+                        + src_raw[idx11 + 2] as f32 * w11)
+                        .round() as u8;
+
+                    deskewed.put_pixel(x, y, Rgba([r, g, b, 255]));
+                }
+            }
         }
+        return Ok((deskewed.into_raw(), out_w, out_h));
     }
 
     Ok((dest_img.into_raw(), out_w, out_h))

@@ -138,13 +138,54 @@ SmartScan là giải pháp máy quét tài liệu thông minh (tương tự CamS
 
 ---
 
+### 13. Tự động Làm thẳng Nội dung Sau Cắt Góc (Deskew Content After Quad Warp) & Sửa Lỗi Studio Re-crop
+- **Vấn đề**:
+  - Khi người dùng chụp góc nghiêng hoặc căn chỉnh 4 góc thủ công, nếu làm xoay thẳng 4 góc đích ngay từ bước homography warp sẽ dẫn đến tình trạng mép giấy bị xoay cắt phạm, làm mất chân chữ hoặc viền nội dung.
+  - Sau khi chỉnh 4 góc thủ công trong Studio, hình ảnh không được nắn lại mà vẫn lưu ảnh cũ, chỉ khi bấm đổi bộ lọc mới nạp lại.
+- **Giải pháp**:
+  - **Quy trình 2 pha "Cắt chuẩn trước -> Làm thẳng nội dung trên giấy sau"**:
+    1. Pha 1: Nắn phẳng tứ giác 4 góc đã chọn sang kích thước hình chữ nhật chuẩn `out_w x out_h` (Homography Warp), đảm bảo giữ trọn vẹn 100% nội dung bên trong vùng cắt mà không bị xén phạm bất kỳ góc nào.
+    2. Pha 2: Đánh giá độ nghiêng của các dòng chữ trên mặt giấy phẳng bằng thuật toán chiếu Radon góc hẹp (Radon Projection Profile). Nếu phát hiện dòng chữ bị nghiêng $|\theta| \ge 0.35^\circ$, tiến hành xoay nội dung bằng ánh xạ ngược (Backward Mapping) với phép nội suy song tuyến (Bilinear Interpolation) và chèn nền trắng bảo toàn trang.
+  - Sửa triệt để lỗi cache Studio: reset `processedThumbnailBlob` ngay khi xác nhận cắt lại để Studio luôn thực hiện nắn góc ảnh mới tức thì.
+
+---
+
+### 14. Bộ Favicon & Biểu tượng Ứng dụng PWA Chuẩn Không Nền
+- **Vấn đề**: File biểu tượng gốc `icon.png` có 4 góc màu trắng bao quanh squircle vàng, làm lộ góc trắng khi cài đặt ứng dụng lên màn hình chính điện thoại hoặc hiển thị favicon trên tab trình duyệt nền tối.
+- **Giải pháp**:
+  - Sử dụng thuật toán phân tích thành phần liên thông (Connected Component Analysis) và khoảng cách Euclidean để tách triệt để 4 góc trắng bên ngoài bo tròn mà không làm biến dạng biểu tượng "be" và squircle màu vàng.
+  - Sinh trọn bộ biểu tượng chất lượng cao trong thư mục `public/`:
+    - `favicon.ico` (đa kích thước 16x16, 32x32, 48x48)
+    - `favicon-16x16.png`, `favicon-32x32.png`, `favicon-48x48.png`
+    - `apple-touch-icon.png` (180x180) chuẩn iOS
+    - `pwa-192x192.png`, `pwa-512x512.png` chuẩn Android PWA
+    - `maskable-icon-512x512.png` (Adaptive Icon với vùng an toàn Safe Zone 10%)
+    - `app-icon.png` (Master PNG trong suốt)
+  - Cập nhật liên kết thẻ `<head>` trong `index.html` và cấu hình manifest PWA trong `vite.config.ts`.
+
+---
+
+### 15. Thanh Cài đặt Ứng dụng PWA Cố định Trên Cùng (Smart PWA Install Banner)
+- **Vấn đề**: Người dùng truy cập bằng trình duyệt web thường quên hoặc không biết cách cài đặt ứng dụng vào màn hình chính điện thoại / desktop. Ngược lại, khi đã cài đặt thành công thì thông báo không được phép xuất hiện làm phiền.
+- **Giải pháp**:
+  - Tạo component `PwaInstallBanner`:
+    - Cố định trên đỉnh trình duyệt (`fixed top-0 left-0 right-0 z-50 h-[42px]`) với phong cách tối giản, hiện đại (nền mờ hiệu ứng kính `backdrop-blur-md`).
+    - **Cơ chế tự động ẩn thông minh**: Kiểm tra chế độ `display-mode: standalone`, `navigator.standalone` (iOS) và cờ `smartscan_pwa_installed` trong LocalStorage. Khi ứng dụng đã cài đặt và chạy ở chế độ standalone, thanh này **hoàn toàn ẩn 100%**.
+    - Bắt sự kiện `beforeinstallprompt` (Chrome / Android / Edge Desktop) để kích hoạt hộp thoại cài đặt chỉ với 1 chạm.
+    - Hỗ trợ hướng dẫn chi tiết từng bước cho người dùng iOS Safari (Bấm Chia sẻ $\rightarrow$ Thêm vào MH chính).
+    - Hỗ trợ nút đóng (X) tạm ẩn trong phiên làm việc.
+
+---
+
 ## III. BẢNG TỔNG KẾT TRẠNG THÁI CÁC TÍNH NĂNG
 
 | Tính năng | Trạng thái | Ghi chú kỹ thuật |
 | :--- | :---: | :--- |
 | **Quét & Nắn góc WASM** | Hoàn thành (100%) | Homography 3x3, Bilinear Interpolation |
-| **Tự động làm thẳng nội dung (Deskew)** | Hoàn thành (100%) | Projection profile variance, $0.00^\circ$ ngang |
+| **Cắt chuẩn trước -> Làm thẳng sau** | Hoàn thành (100%) | 2-phase deskew: Quad warp trước, Radon tilt xoay sau |
 | **Trích xuất văn bản & Google Docs** | Hoàn thành (100%) | Khung soạn thảo, xuất 1 chạm Google Docs & .DOC |
+| **Bộ Favicon & PWA App Icons** | Hoàn thành (100%) | Xóa 4 góc trắng, sinh trọn bộ ico/png/maskable |
+| **Thanh cài đặt ứng dụng PWA** | Hoàn thành (100%) | Cố định trên cùng, tự động ẩn 100% khi đã cài đặt |
 | **Auto-crop thông minh** | Hoàn thành (100%) | White Saliency, CamScanner Locked Tracking |
 | **Chống rung camera** | Hoàn thành (100%) | Temporal Hysteresis & Outlier Rejection |
 | **Chỉnh góc thủ công** | Hoàn thành (100%) | Kính lúp 1.75x, offset arm 30px, zoom/pan |

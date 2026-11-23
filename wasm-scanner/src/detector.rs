@@ -526,14 +526,7 @@ pub fn refine_quad_corners(
     }
 
     // 1. Fine local snap for Left, Right, Top and Bottom borders
-    // Overlapping object on left rejection (e.g. clipboard/paper to the left):
-    // In perspective projection, if left border leans sharply left (BL.x < TL.x - 8)
-    // while right border is vertical or leans right (BR.x >= TR.x), BL has swallowed side clutter.
-    if refined[3].x < refined[0].x - 8.0 && refined[2].x >= refined[1].x - 4.0 {
-        refined[3].x = refined[0].x + (refined[2].x - refined[1].x) * 0.05;
-    }
-
-    // Left border normal: horizontal (1, 0)
+    // Left border normal: horizontal (1.0, 0.0)
     let (l_tl_x, _, l_bl_x, _) = snap_line_to_strongest_gradient(
         (refined[0].x, refined[0].y),
         (refined[3].x, refined[3].y),
