@@ -107,6 +107,7 @@ export interface TranslationDictionary {
   recentTitle: string;
   seeAll: string;
   shareButton: string;
+  downloadButton: string;
   toWordButton: string;
   toPdfButton: string;
   viewButton: string;
@@ -224,6 +225,7 @@ export const translations: Record<Language, TranslationDictionary> = {
     recentTitle: 'Gần đây',
     seeAll: 'Xem tất cả >',
     shareButton: 'Chia sẻ',
+    downloadButton: 'Tải về',
     toWordButton: 'Thành Word',
     toPdfButton: 'Thành PDF',
     viewButton: 'Xem',
@@ -339,6 +341,7 @@ export const translations: Record<Language, TranslationDictionary> = {
     recentTitle: 'Recent',
     seeAll: 'See all >',
     shareButton: 'Share',
+    downloadButton: 'Download',
     toWordButton: 'To Word',
     toPdfButton: 'To PDF',
     viewButton: 'View',

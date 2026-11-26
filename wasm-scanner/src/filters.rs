@@ -187,6 +187,283 @@ fn sample_bg_rgb(bg: &[[f32; 3]], dw: u32, dh: u32, u: f32, v: f32) -> [f32; 3] 
     ]
 }
 
+/// Unified CamScanner-grade Retinex + Stain Eraser + Edge-Gated Unsharp + Despeckle engine
+/// Used by Mode 1 (Magic Color) and Mode 2 (Magic Pro)
+fn apply_retinex_enhancement(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    contrast: f32,
+    brightness: f32,
+    max_rad: usize,
+    blur_rad: usize,
+    sharpen_amt: f32,
+    ink_gamma: f32,
+    red_boost: f32,
+    red_attenuate: f32,
+    feather_edges: bool,
+    out: &mut [u8],
+) {
+    let w = width as usize;
+    let h = height as usize;
+    let total_pixels = w * h;
+
+    // 1. Estimate local illumination surface tightly so curved paper shadows cancel completely
+    let (mut bg, dw, dh) = downscale_rgb(rgba, width, height, 320);
+    max_filter_rgb(&mut bg, dw, dh, max_rad);
+    box_blur_rgb(&mut bg, dw, dh, blur_rad);
+    box_blur_rgb(&mut bg, dw, dh, blur_rad);
+
+    let mut bg_lumas: Vec<f32> = bg
+        .iter()
+        .map(|p| 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2])
+        .collect();
+    bg_lumas.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let ref_paper = bg_lumas
+        .get((bg_lumas.len() as f32 * 0.80) as usize)
+        .copied()
+        .unwrap_or(210.0)
+        .clamp(150.0, 245.0);
+    let min_bg_floor = (ref_paper * 0.58).max(42.0);
+
+    // 2. Retinex division into intermediate RGB & luminance buffers
+    let mut div_rgb = vec![[255.0f32; 3]; total_pixels];
+    let mut div_luma = vec![255.0f32; total_pixels];
+    for y in 0..h {
+        let v = y as f32 / height as f32;
+        let row_off = y * w;
+        for x in 0..w {
+            let u = x as f32 / width as f32;
+            let i = row_off + x;
+            let idx = i * 4;
+            let bg_p = sample_bg_rgb(&bg, dw, dh, u, v);
+            let r_d = (rgba[idx] as f32 / bg_p[0].max(min_bg_floor) * 255.0).clamp(0.0, 255.0);
+            let g_d = (rgba[idx + 1] as f32 / bg_p[1].max(min_bg_floor) * 255.0).clamp(0.0, 255.0);
+            let b_d = (rgba[idx + 2] as f32 / bg_p[2].max(min_bg_floor) * 255.0).clamp(0.0, 255.0);
+            div_rgb[i] = [r_d, g_d, b_d];
+            div_luma[i] = 0.299 * r_d + 0.587 * g_d + 0.114 * b_d;
+        }
+    }
+
+    // 3. Edge-Gated 3x3 Unsharp Mask: sharpens ONLY dark ink strokes/lines (diff < -3.2),
+    // NEVER amplifying JPEG block noise or gray paper grain!
+    let mut sharp_temp = vec![255.0f32; total_pixels];
+    for y in 0..h {
+        let row_off = y * w;
+        for x in 0..w {
+            let l = div_luma[row_off + x.saturating_sub(1)];
+            let c = div_luma[row_off + x];
+            let r = div_luma[row_off + (x + 1).min(w - 1)];
+            sharp_temp[row_off + x] = (l + c + r) / 3.0;
+        }
+    }
+    let mut sharp_luma = vec![255.0f32; total_pixels];
+    for y in 0..h {
+        let y_prev = y.saturating_sub(1) * w;
+        let y_curr = y * w;
+        let y_next = (y + 1).min(h - 1) * w;
+        for x in 0..w {
+            let blur_l = (sharp_temp[y_prev + x] + sharp_temp[y_curr + x] + sharp_temp[y_next + x]) / 3.0;
+            let orig_l = div_luma[y_curr + x];
+            let diff_l = orig_l - blur_l;
+            if orig_l < 238.0 && diff_l < -3.2 {
+                sharp_luma[y_curr + x] = (orig_l + sharpen_amt * diff_l).clamp(0.0, 255.0);
+            } else {
+                sharp_luma[y_curr + x] = orig_l;
+            }
+        }
+    }
+
+    // 4.Separable 7x7 local peak luminance for Gray Stain Detection ("Xóa vết nám xám"):
+    // Broad smooth stains have tiny local_drop (< 12.5), whereas 1px thin borders/text have local_drop >= 18!
+    let r_loc = 3usize;
+    let mut hi_temp = vec![0.0f32; total_pixels];
+    let mut local_hi = vec![0.0f32; total_pixels];
+    for y in 0..h {
+        let row = y * w;
+        for x in 0..w {
+            let s = x.saturating_sub(r_loc);
+            let e = (x + r_loc + 1).min(w);
+            let mut m = 0.0f32;
+            for k in s..e {
+                if div_luma[row + k] > m {
+                    m = div_luma[row + k];
+                }
+            }
+            hi_temp[row + x] = m;
+        }
+    }
+    for x in 0..w {
+        for y in 0..h {
+            let s = y.saturating_sub(r_loc);
+            let e = (y + r_loc + 1).min(h);
+            let mut m = 0.0f32;
+            for k in s..e {
+                if hi_temp[k * w + x] > m {
+                    m = hi_temp[k * w + x];
+                }
+            }
+            local_hi[y * w + x] = m;
+        }
+    }
+
+    // 5. Adaptive paper white floor & ink black anchor
+    let step = (total_pixels / 4096).max(1);
+    let mut sample_div: Vec<f32> = div_luma.iter().step_by(step).copied().collect();
+    sample_div.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mut sample_sharp: Vec<f32> = sharp_luma.iter().step_by(step).copied().collect();
+    sample_sharp.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n_samp = sample_div.len().max(1);
+    let paper_med = sample_div[n_samp / 2];
+    let p02 = sample_sharp[(n_samp as f32 * 0.015) as usize];
+
+    let white_floor = (paper_med - 20.0).clamp(212.0, 234.0);
+    let pure_white = (paper_med - 8.0).clamp(228.0, 244.0);
+    let black_pt = (p02 - 12.0).clamp(20.0, 118.0);
+
+    let margin_x = ((width as f32) * 0.035).max(6.0);
+    let margin_y = ((height as f32) * 0.020).max(5.0);
+
+    // Track protected colored pixels so 5x5 gray-stain despeckle never touches seals/stamps
+    let mut is_colored = vec![false; total_pixels];
+
+    // 6. Tone mapping, gray stain removal & crisp color preservation
+    for y in 0..h {
+        let dist_y = (y as f32).min((h - 1 - y) as f32);
+        let row_off = y * w;
+        for x in 0..w {
+            let dist_x = (x as f32).min((w - 1 - x) as f32);
+            let i = row_off + x;
+            let idx = i * 4;
+
+            let orig_l = div_luma[i].max(1.0);
+            let base_r = div_rgb[i][0];
+            let base_g = div_rgb[i][1];
+            let base_b = div_rgb[i][2];
+            let is_red_seal = base_r > (base_g + 15.0) && base_r > (base_b + 15.0);
+            let max_b0 = base_r.max(base_g).max(base_b);
+            let min_b0 = base_r.min(base_g).min(base_b);
+            let has_chroma = (max_b0 - min_b0) > 22.0;
+
+            if is_red_seal || has_chroma {
+                is_colored[i] = true;
+            }
+
+            let target_sharp_l = sharp_luma[i];
+            let local_drop = local_hi[i] - target_sharp_l;
+            let is_gray_stain = !is_red_seal && !has_chroma && div_luma[i] >= 168.0 && local_drop < 12.5;
+
+            let (mut r_div, mut g_div, mut b_div) = if is_red_seal {
+                (
+                    (base_r * red_boost).min(255.0),
+                    (base_g * red_attenuate).min(255.0),
+                    (base_b * red_attenuate).min(255.0),
+                )
+            } else if is_gray_stain || target_sharp_l >= pure_white {
+                (255.0, 255.0, 255.0)
+            } else {
+                let l_ratio = (target_sharp_l / orig_l).clamp(0.30, 1.30);
+                let mut r_s = (base_r * l_ratio).clamp(0.0, 255.0);
+                let mut g_s = (base_g * l_ratio).clamp(0.0, 255.0);
+                let mut b_s = (base_b * l_ratio).clamp(0.0, 255.0);
+
+                if target_sharp_l >= white_floor {
+                    let f = ((target_sharp_l - white_floor) / (pure_white - white_floor).max(1.0)).clamp(0.0, 1.0);
+                    let w_factor = f.powf(0.80);
+                    r_s = (r_s + (255.0 - r_s) * w_factor).min(255.0);
+                    g_s = (g_s + (255.0 - g_s) * w_factor).min(255.0);
+                    b_s = (b_s + (255.0 - b_s) * w_factor).min(255.0);
+                } else {
+                    let t_ink = ((target_sharp_l - black_pt) / (white_floor - black_pt).max(1.0)).clamp(0.0, 1.0);
+                    let new_luma = t_ink.powf(ink_gamma) * 206.0;
+                    let s = if target_sharp_l > 1.0 { new_luma / target_sharp_l } else { 0.0 };
+                    r_s = (r_s * s).clamp(0.0, 255.0);
+                    g_s = (g_s * s).clamp(0.0, 255.0);
+                    b_s = (b_s * s).clamp(0.0, 255.0);
+                }
+                (r_s, g_s, b_s)
+            };
+
+            if has_chroma && !is_red_seal {
+                let cur_l = 0.299 * r_div + 0.587 * g_div + 0.114 * b_div;
+                r_div = (cur_l + (r_div - cur_l) * 1.28).clamp(0.0, 255.0);
+                g_div = (cur_l + (g_div - cur_l) * 1.28).clamp(0.0, 255.0);
+                b_div = (cur_l + (b_div - cur_l) * 1.28).clamp(0.0, 255.0);
+            }
+
+            if feather_edges && !is_red_seal {
+                let edge_dist = (dist_x / margin_x).min(dist_y / margin_y);
+                let cur_l = 0.299 * r_div + 0.587 * g_div + 0.114 * b_div;
+                if edge_dist < 1.0 && cur_l > 140.0 {
+                    let blend = edge_dist.clamp(0.0, 1.0);
+                    let bs = blend * blend * (3.0 - 2.0 * blend);
+                    r_div = r_div * bs + 255.0 * (1.0 - bs);
+                    g_div = g_div * bs + 255.0 * (1.0 - bs);
+                    b_div = b_div * bs + 255.0 * (1.0 - bs);
+                }
+            }
+
+            out[idx] = r_div.round() as u8;
+            out[idx + 1] = g_div.round() as u8;
+            out[idx + 2] = b_div.round() as u8;
+            out[idx + 3] = 255;
+        }
+    }
+
+    // 7. 5x5 Gray-Speckle & Residual Stain Cleaner (preserves all anti-aliased strokes adjacent to <= 165 ink!)
+    let mut out_luma = vec![255u8; total_pixels];
+    for i in 0..total_pixels {
+        let idx = i * 4;
+        out_luma[i] = ((0.299 * out[idx] as f32
+            + 0.587 * out[idx + 1] as f32
+            + 0.114 * out[idx + 2] as f32)
+            .round()) as u8;
+    }
+
+    let mut min_h_buf = vec![255u8; total_pixels];
+    for y in 0..h {
+        let row = y * w;
+        for x in 0..w {
+            let s = x.saturating_sub(2);
+            let e = (x + 3).min(w);
+            let mut m = 255u8;
+            for k in s..e {
+                if out_luma[row + k] < m {
+                    m = out_luma[row + k];
+                }
+            }
+            min_h_buf[row + x] = m;
+        }
+    }
+
+    for y in 0..h {
+        let s_y = y.saturating_sub(2);
+        let e_y = (y + 3).min(h);
+        let row = y * w;
+        for x in 0..w {
+            let i = row + x;
+            let idx = i * 4;
+            if !is_colored[i] && out_luma[i] > 172 {
+                let mut min5 = 255u8;
+                for ky in s_y..e_y {
+                    let v = min_h_buf[ky * w + x];
+                    if v < min5 {
+                        min5 = v;
+                    }
+                }
+                if min5 > 162 {
+                    out[idx] = 255;
+                    out[idx + 1] = 255;
+                    out[idx + 2] = 255;
+                }
+            }
+            out[idx] = adjust_channel(out[idx], contrast, brightness);
+            out[idx + 1] = adjust_channel(out[idx + 1], contrast, brightness);
+            out[idx + 2] = adjust_channel(out[idx + 2], contrast, brightness);
+        }
+    }
+}
+
 /// Apply scan filters:
 /// mode = 0 (ORIGINAL): Keep color fidelity + contrast & brightness
 /// mode = 1 (MAGIC COLOR - MÀU THẦN KỲ): Retinex Illumination Normalization (shadow removal, white paper, vivid red stamp & colors)
@@ -227,194 +504,26 @@ pub fn apply_scan_filter(
 
         // ====================================================================
         // MODE 1: MÀU THẦN KỲ (CamScanner Magic Color)
-        // Eliminates lighting casts and shadows via Retinex division,
-        // whitens the paper smoothly, sharpens text, and preserves rich colors.
+        // Eliminates lighting casts and shadows via Retinex + crisp Unsharp Mask,
+        // keeps pure #FFFFFF paper, bolds ink strokes, preserves red stamps.
         // ====================================================================
         1 => {
-            // 1. Estimate illumination surface via dilation + 2x box blur
-            let (mut bg, dw, dh) = downscale_rgb(rgba, width, height, 240);
-            max_filter_rgb(&mut bg, dw, dh, 8);
-            box_blur_rgb(&mut bg, dw, dh, 10);
-            box_blur_rgb(&mut bg, dw, dh, 10);
-
-            // 2. Find 80th percentile paper reference luminance
-            let mut lumas: Vec<f32> = bg
-                .iter()
-                .map(|p| 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2])
-                .collect();
-            lumas.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let ref_paper = lumas
-                .get((lumas.len() as f32 * 0.80) as usize)
-                .copied()
-                .unwrap_or(210.0)
-                .clamp(150.0, 245.0);
-            let min_bg_floor = (ref_paper * 0.55).max(40.0);
-
-            // 3. Process each pixel with Retinex division + smooth tone curve
-            for y in 0..height {
-                let v = y as f32 / height as f32;
-                for x in 0..width {
-                    let u = x as f32 / width as f32;
-                    let idx = ((y * width + x) * 4) as usize;
-
-                    let r = rgba[idx] as f32;
-                    let g = rgba[idx + 1] as f32;
-                    let b = rgba[idx + 2] as f32;
-
-                    let bg_p = sample_bg_rgb(&bg, dw, dh, u, v);
-                    let bg_r = bg_p[0].max(min_bg_floor);
-                    let bg_g = bg_p[1].max(min_bg_floor);
-                    let bg_b = bg_p[2].max(min_bg_floor);
-
-                    // Retinex division: cancel lighting shadow & yellow cast
-                    let mut r_div = (r / bg_r * 255.0).clamp(0.0, 255.0);
-                    let mut g_div = (g / bg_g * 255.0).clamp(0.0, 255.0);
-                    let mut b_div = (b / bg_b * 255.0).clamp(0.0, 255.0);
-
-                    let luma = 0.299 * r_div + 0.587 * g_div + 0.114 * b_div;
-                    let is_red_seal = r_div > (g_div + 15.0) && r_div > (b_div + 15.0);
-
-                    if is_red_seal {
-                        // Boost Vietnamese red seal brilliance
-                        r_div = (r_div * 1.25).min(255.0);
-                        g_div = (g_div * 0.82).min(255.0);
-                        b_div = (b_div * 0.82).min(255.0);
-                    } else if luma >= 200.0 {
-                        // Paper background: smooth, uniform roll-off to pure white across the entire sheet
-                        let f = ((luma - 200.0) / 45.0).clamp(0.0, 1.0);
-                        let w_factor = f.powf(0.55);
-                        r_div = (r_div + (255.0 - r_div) * w_factor).min(255.0);
-                        g_div = (g_div + (255.0 - g_div) * w_factor).min(255.0);
-                        b_div = (b_div + (255.0 - b_div) * w_factor).min(255.0);
-                        if luma >= 225.0 {
-                            r_div = 255.0;
-                            g_div = 255.0;
-                            b_div = 255.0;
-                        }
-                    } else if luma < 178.0 {
-                        // Text & ink: deepen contrast so text is dark, bold and sharp
-                        let d_factor = (luma / 178.0).powf(0.36);
-                        r_div *= d_factor;
-                        g_div *= d_factor;
-                        b_div *= d_factor;
-                    }
-
-                    // Boost colorful stamps / emblems / signatures
-                    let max_c = r_div.max(g_div).max(b_div);
-                    let min_c = r_div.min(g_div).min(b_div);
-                    let chroma = max_c - min_c;
-                    if chroma > 18.0 && !is_red_seal {
-                        let cur_l = 0.299 * r_div + 0.587 * g_div + 0.114 * b_div;
-                        r_div = (cur_l + (r_div - cur_l) * 1.30).clamp(0.0, 255.0);
-                        g_div = (cur_l + (g_div - cur_l) * 1.30).clamp(0.0, 255.0);
-                        b_div = (cur_l + (b_div - cur_l) * 1.30).clamp(0.0, 255.0);
-                    }
-
-                    out[idx] = adjust_channel(r_div.round() as u8, contrast, brightness);
-                    out[idx + 1] = adjust_channel(g_div.round() as u8, contrast, brightness);
-                    out[idx + 2] = adjust_channel(b_div.round() as u8, contrast, brightness);
-                    out[idx + 3] = 255;
-                }
-            }
+            apply_retinex_enhancement(
+                rgba, width, height, contrast, brightness,
+                4, 5, 1.10, 1.32, 1.25, 0.82, true, &mut out,
+            );
         }
 
         // ====================================================================
         // MODE 2: THẦN KỲ CHUYÊN NGHIỆP (CamScanner Magic Pro)
-        // Clean dazzling white paper, ultra-deep black ink, vivid red seal,
+        // Dazzling uniform #FFFFFF paper, ultra-deep laser black ink, vivid red seal,
         // and smooth feather edge dissolution of desk/photocopy bleed.
         // ====================================================================
         2 => {
-            // 1. Illumination estimation
-            let (mut bg, dw, dh) = downscale_rgb(rgba, width, height, 240);
-            max_filter_rgb(&mut bg, dw, dh, 10);
-            box_blur_rgb(&mut bg, dw, dh, 12);
-            box_blur_rgb(&mut bg, dw, dh, 12);
-
-            let mut lumas: Vec<f32> = bg
-                .iter()
-                .map(|p| 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2])
-                .collect();
-            lumas.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let ref_paper = lumas
-                .get((lumas.len() as f32 * 0.85) as usize)
-                .copied()
-                .unwrap_or(215.0)
-                .clamp(160.0, 245.0);
-            let min_bg_floor = (ref_paper * 0.60).max(45.0);
-
-            // Margin for outer edge feathering (dissolves desk edge without ugly boxes)
-            let margin_x = ((width as f32) * 0.018).max(4.0);
-            let margin_y = ((height as f32) * 0.018).max(4.0);
-
-            for y in 0..height {
-                let v = y as f32 / height as f32;
-                let dist_y = (y as f32).min((height - 1 - y) as f32);
-
-                for x in 0..width {
-                    let u = x as f32 / width as f32;
-                    let dist_x = (x as f32).min((width - 1 - x) as f32);
-                    let idx = ((y * width + x) * 4) as usize;
-
-                    let r = rgba[idx] as f32;
-                    let g = rgba[idx + 1] as f32;
-                    let b = rgba[idx + 2] as f32;
-
-                    let bg_p = sample_bg_rgb(&bg, dw, dh, u, v);
-                    let bg_r = bg_p[0].max(min_bg_floor);
-                    let bg_g = bg_p[1].max(min_bg_floor);
-                    let bg_b = bg_p[2].max(min_bg_floor);
-
-                    // Retinex normalization
-                    let mut r_div = (r / bg_r * 255.0).clamp(0.0, 255.0);
-                    let mut g_div = (g / bg_g * 255.0).clamp(0.0, 255.0);
-                    let mut b_div = (b / bg_b * 255.0).clamp(0.0, 255.0);
-
-                    let luma = 0.299 * r_div + 0.587 * g_div + 0.114 * b_div;
-                    let is_red_seal = r_div > (g_div + 15.0) && r_div > (b_div + 15.0);
-
-                    if is_red_seal {
-                        // High-fidelity scarlet red seal enhancement
-                        r_div = (r_div * 1.30).min(255.0);
-                        g_div = (g_div * 0.78).min(255.0);
-                        b_div = (b_div * 0.78).min(255.0);
-                    } else if luma >= 195.0 {
-                        // Professional pure paper white roll-off
-                        let f = ((luma - 195.0) / 45.0).clamp(0.0, 1.0);
-                        let w_factor = f.powf(0.55);
-                        r_div = (r_div + (255.0 - r_div) * w_factor).min(255.0);
-                        g_div = (g_div + (255.0 - g_div) * w_factor).min(255.0);
-                        b_div = (b_div + (255.0 - b_div) * w_factor).min(255.0);
-                        if luma >= 220.0 {
-                            r_div = 255.0;
-                            g_div = 255.0;
-                            b_div = 255.0;
-                        }
-                    } else if luma < 178.0 {
-                        // Deep black laser ink
-                        let d_factor = (luma / 178.0).powf(0.40);
-                        r_div *= d_factor;
-                        g_div *= d_factor;
-                        b_div *= d_factor;
-                    }
-
-                    // Feather border edges: softly dissolves any desk shadow or photocopy edge leak
-                    if !is_red_seal {
-                        let edge_dist = dist_x.min(dist_y);
-                        let margin = margin_x.min(margin_y);
-                        if edge_dist < margin && luma > 100.0 {
-                            let blend = (edge_dist / margin).clamp(0.0, 1.0);
-                            r_div = r_div * blend + 255.0 * (1.0 - blend);
-                            g_div = g_div * blend + 255.0 * (1.0 - blend);
-                            b_div = b_div * blend + 255.0 * (1.0 - blend);
-                        }
-                    }
-
-                    out[idx] = adjust_channel(r_div.round() as u8, contrast, brightness);
-                    out[idx + 1] = adjust_channel(g_div.round() as u8, contrast, brightness);
-                    out[idx + 2] = adjust_channel(b_div.round() as u8, contrast, brightness);
-                    out[idx + 3] = 255;
-                }
-            }
+            apply_retinex_enhancement(
+                rgba, width, height, contrast, brightness,
+                5, 6, 1.25, 1.42, 1.30, 0.78, true, &mut out,
+            );
         }
 
         // ====================================================================
@@ -493,5 +602,41 @@ mod tests {
         // Red channel must remain dominant and vibrant
         assert!(out_r > out_g + 50);
         assert!(out_r > out_b + 50);
+    }
+
+    #[test]
+    fn test_gray_stain_removed_while_thin_border_preserved() {
+        let w = 120u32;
+        let h = 120u32;
+        // Clean paper at 215
+        let mut rgba = vec![215u8; (w * h * 4) as usize];
+        for i in 0..(w * h) as usize {
+            rgba[i * 4 + 3] = 255;
+        }
+        // Add a broad gray stain band (width 18px, luma 188) on the left x=12..30
+        for y in 15..105 {
+            for x in 12..30 {
+                let idx = ((y * w + x) * 4) as usize;
+                rgba[idx] = 188;
+                rgba[idx + 1] = 188;
+                rgba[idx + 2] = 188;
+            }
+        }
+        // Add a thin 1px horizontal box border at y=50, x=45..95 (luma 165)
+        for x in 45..95 {
+            let idx = ((50 * w + x) * 4) as usize;
+            rgba[idx] = 165;
+            rgba[idx + 1] = 165;
+            rgba[idx + 2] = 165;
+        }
+
+        let res = apply_scan_filter(&rgba, w, h, 1, 1.0, 0.0);
+        // Stain interior at (20, 60) must be completely whitened to 255
+        let stain_idx = ((60 * w + 20) * 4) as usize;
+        assert_eq!(res[stain_idx], 255, "Expected gray stain to be erased to 255, got {}", res[stain_idx]);
+
+        // Thin 1px border at (70, 50) must be preserved and darkened
+        let line_idx = ((50 * w + 70) * 4) as usize;
+        assert!(res[line_idx] < 140, "Expected thin 1px border to be preserved dark, got {}", res[line_idx]);
     }
 }

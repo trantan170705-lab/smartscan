@@ -4,10 +4,10 @@ import {
   FileText,
   Download,
   Share2,
+  Eye,
   Trash2,
   Clock,
   CheckCircle2,
-  ExternalLink,
 } from 'lucide-react';
 import {
   getExportHistory,
@@ -26,7 +26,7 @@ interface ExportHistoryModalProps {
 export const ExportHistoryModal: React.FC<ExportHistoryModalProps> = ({ isOpen, onClose }) => {
   const [history, setHistory] = useState<ExportHistoryItem[]>([]);
   const [notification, setNotification] = useState<string | null>(null);
-  const { language } = useLanguage();
+  const { language, t } = useLanguage();
 
   const isVi = language === 'vi';
 
@@ -61,7 +61,13 @@ export const ExportHistoryModal: React.FC<ExportHistoryModalProps> = ({ isOpen, 
   };
 
   const handleShare = async (item: ExportHistoryItem) => {
-    await sharePdfDocument(item.pdfBlob, item.fileName, (msg: string) => showToast(msg));
+    await sharePdfDocument(item.pdfBlob, item.fileName, showToast);
+  };
+
+  const handleView = (item: ExportHistoryItem) => {
+    const url = URL.createObjectURL(item.pdfBlob);
+    window.open(url, '_blank');
+    window.setTimeout(() => URL.revokeObjectURL(url), 60000);
   };
 
   const handleDelete = async (id: string) => {
@@ -179,17 +185,29 @@ export const ExportHistoryModal: React.FC<ExportHistoryModalProps> = ({ isOpen, 
                     className="px-2.5 py-1.5 rounded-[3px] bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--border-active)] text-[var(--text-primary)] font-mono text-[11px] flex items-center gap-1.5 cursor-pointer active:scale-95 transition-transform"
                   >
                     <Share2 size={12} strokeWidth={1.5} className="text-[var(--accent-laser)]" />
-                    <span>{isVi ? 'Zalo / Chia sẻ' : 'Share'}</span>
+                    <span>{t.shareButton}</span>
                   </button>
 
-                  {/* Re-download button */}
+                  {/* Download button (between Share and View) */}
                   <button
                     type="button"
                     onClick={() => handleDownload(item)}
-                    title={isVi ? 'Tải lại về máy' : 'Download file'}
-                    className="p-1.5 rounded-[3px] bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--border-active)] text-[var(--text-primary)] cursor-pointer active:scale-95 transition-transform"
+                    title={isVi ? 'Tải về máy' : 'Download PDF'}
+                    className="px-2.5 py-1.5 rounded-[3px] bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--border-active)] text-[var(--text-primary)] font-mono text-[11px] flex items-center gap-1.5 cursor-pointer active:scale-95 transition-transform"
                   >
-                    <Download size={13} strokeWidth={1.5} />
+                    <Download size={12} strokeWidth={1.5} />
+                    <span>{t.downloadButton}</span>
+                  </button>
+
+                  {/* View button */}
+                  <button
+                    type="button"
+                    onClick={() => handleView(item)}
+                    title={isVi ? 'Xem tài liệu PDF' : 'View PDF'}
+                    className="px-2.5 py-1.5 rounded-[3px] bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--border-active)] text-[var(--text-primary)] font-mono text-[11px] flex items-center gap-1.5 cursor-pointer active:scale-95 transition-transform"
+                  >
+                    <Eye size={12} strokeWidth={1.5} />
+                    <span>{t.viewButton}</span>
                   </button>
 
                   {/* Delete button */}

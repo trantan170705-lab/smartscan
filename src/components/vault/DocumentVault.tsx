@@ -132,7 +132,7 @@ export const DocumentVault: React.FC<DocumentVaultProps> = ({
 
   const handleSharePdf = async (item: ExportHistoryItem, e: React.MouseEvent) => {
     e.stopPropagation();
-    await sharePdfDocument(item.pdfBlob, item.fileName, (msg: string) => showToast(msg));
+    await sharePdfDocument(item.pdfBlob, item.fileName, showToast);
   };
 
   const handleDownloadPdf = (item: ExportHistoryItem, e: React.MouseEvent) => {
@@ -473,6 +473,15 @@ export const DocumentVault: React.FC<DocumentVaultProps> = ({
                         >
                           <Share2 size={12} strokeWidth={1.5} />
                           <span>{t.shareButton}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(e) => handleDownloadPdf(item, e)}
+                          className="flex-1 py-1 px-2 rounded-[3px] bg-[var(--bg-elevated)] hover:bg-[var(--bg-panel)] hover:text-[var(--text-primary)] font-mono text-[11px] text-[var(--text-muted)] flex items-center justify-center gap-1.5 border border-[var(--border-hairline)] transition-colors cursor-pointer"
+                        >
+                          <Download size={12} strokeWidth={1.5} />
+                          <span>{t.downloadButton}</span>
                         </button>
 
                         <button

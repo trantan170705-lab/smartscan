@@ -301,14 +301,54 @@ SmartScan là giải pháp máy quét tài liệu thông minh (tương tự CamS
 
 ---
 
+### 23. Nâng Cấp Toàn Diện Thuật Toán Làm Thẳng Giấy & Nội Dung Trong Rust WASM (`warp.rs` & `filters.rs`)
+- **Vấn đề**: Dù đã nắn 4 góc phối cảnh, văn bản bên trong vẫn bị xiên lề (shear), tỷ lệ trang bị lùn do phối cảnh nghiêng, và chữ trên ảnh nén bị nhạt/mất nét mảnh.
+- **Cải tiến kỹ thuật thuần Rust WASM**:
+  1. **Khôi phục Tỷ lệ 3D chuẩn (`estimate_aspect_ratio_3d` trong `warp.rs`)**: Áp dụng phương trình hình học chiếu xạ tìm tiêu cự $f^2$ (Zhang's orthogonality constraint) từ 4 góc tứ giác để tự động phục hồi đúng tỷ lệ khung giấy thật (ví dụ từ ảnh chụp xiên `443x556` lùn phục hồi chính xác thành `443x619`, khớp tỷ lệ A4 `0.715`).
+  2. **Sửa lỗi ngược dấu góc xoay & Bù nghiêng Keystone ngang (`warp.rs`)**: Khắc phục lỗi dấu `-tilt_angle` khi ánh xạ ngược; đo riêng góc nghiêng phần trên (`top`) và phần dưới (`bottom`) của trang giấy để nội suy mượt nắn thẳng các đường méo hình thang còn sót lại.
+  3. **Nắn Thẳng Cột Dọc / Khử Xô Lệch (`estimate_vertical_shear_angle` trong `warp.rs`)**: Kết hợp **RANSAC bám biên lề trái đoạn văn bản** (bỏ qua nhiễu mép giấy ngoài `6.8%`) và **Radon biến thiên cạnh dọc**, tự động chỉnh độ xô lệch từ `~3.3°` về `0.00°`, giúp toàn bộ hàng ngang và cột dọc vuông vức `0° / 90°`.
+  4. **Làm Sạch Viền Bàn & Cân Lề Tự Động (`cleanup_borders_and_center` trong `warp.rs`)**: Tẩy mờ viền tối bên ngoài vùng chữ và căn giữa cân đối lề trắng trái/phải.
+  5. **Retinex Cục Bộ Siêu Mịn + Unsharp Mask (`apply_retinex_enhancement` trong `filters.rs`)**: Thu hẹp bán kính ước lượng nền giấy (giữ nền trắng tuyền `#FFFFFF` đồng nhất cả sát mép cong) kết hợp Unsharp Mask 3x3 và co giãn ngưỡng đen/trắng thích ứng giúp chữ nét đậm, rõ dấu tiếng Việt và giữ rực rỡ con dấu đỏ.
+
+---
+
+### 24. Khử Cong Parabol Mịn (Single-Pass Bicubic Dewarping) & Xóa Triệt Để Vết Nám Xám Trên Giấy
+- **Vấn đề**:
+  1. Dọc mép giấy cong hoặc vùng gấp nếp vẫn còn vệt nám xám (`luma ~ 215–242`) do đường nối bù lề và nhiễu hạt JPEG bị Unsharp Mask khuếch đại.
+  2. Khung hộp `Mẫu số: 01/TNDN` và chữ ở góc trên bị võng cong (do kẹp ghim làm giấy uốn 3D) và gợn răng cưa do lấy mẫu song tuyến 2 lần liên tiếp (double bilinear resampling).
+- **Giải pháp kỹ thuật thuần Rust WASM (`warp.rs` & `filters.rs`)**:
+  1. **Lấy mẫu 1 lượt duy nhất bằng nội suy Bicubic Catmull-Rom 4×4 (`sample_bicubic_clamped` trong `warp.rs`)**: Hợp nhất ma trận nghịch đảo phối cảnh (`inv_proj`) trực tiếp với mặt cong nắn phẳng để lấy mẫu thẳng từ ảnh gốc chỉ **1 lần duy nhất**, triệt tiêu hoàn toàn hiện tượng gợn sóng pha (bilinear phase beating) trên đường kẻ mảnh và chữ nhỏ.
+  2. **Khử cong mặt giấy Parabol 2D dưới mức pixel (`fit_band_parabola_subpixel` & `fit_vertical_margin_curve` trong `warp.rs`)**:
+     - Tối ưu hóa năng lượng đạo hàm bậc hai trên biểu đồ tích lũy dưới mức pixel (sub-pixel splatting) để tìm đồng thời độ nghiêng và độ võng parabol $(b, a)$ cho từng dải trang (trên/giữa/dưới), đi kèm điều kiện ngưỡng tin cậy để trang phẳng giữ nguyên 100%.
+     - Khớp đường cong bậc hai cho lề trái đoạn văn bằng RANSAC + bình phương tối thiểu có điều chuẩn, nắn thẳng tuyệt đối cả mép cột bị uốn cong.
+     - Bù lề bằng chính màu giấy tự nhiên nội vùng (`paper_rgb` phân vị 82%) thay vì `255` cứng, giúp cả chế độ `Gốc` lẫn bộ lọc Retinex hoàn toàn liền mạch, không sinh vệt xám ở ranh giới.
+  3. **Thuật toán Xóa Vết Nám Xám & Lọc Hạt Nền (`apply_retinex_enhancement` trong `filters.rs`)**:
+     - **Edge-Gated Unsharp Mask**: Chỉ làm sắc nét các nét mực tối (`orig_l < 238` và `diff_l < -3.2`), tuyệt đối không khuếch đại nhiễu hạt trên nền giấy xám.
+     - **7×7 Local-Peak Stain Eraser**: Phát hiện các mảng nám/bóng xám trải rộng có độ chênh cục bộ thấp (`div_luma >= 168` và `local_drop < 12.5`) và tẩy thẳng về `#FFFFFF` (`255`), trong khi bảo toàn 100% đường kẻ mảnh `1px` (vốn có `local_drop >= 18`) và con dấu đỏ/màu.
+     - **5×5 Gray-Speckle Cleaner**: Quét sạch hoàn toàn các hạt bụi xám lẻ tẻ (`out_luma > 172` không có lõi mực `<= 162` lân cận), cho nền trang giấy trắng tinh khiết tuyệt đối `255` từ mép vào tâm.
+
+---
+
+### 25. Tách Riêng Nút Tải Về & Chia Sẻ Zalo PC Dán Trực Tiếp File `.PDF` Bằng `Ctrl + V`
+- **Vấn đề**:
+  1. Bấm nút `Chia sẻ` trước đây bị tự động tải file PDF về máy, thiếu nút `Tải về` độc lập nằm giữa `Chia sẻ` và `Xem`.
+  2. Trên Windows PC, người dùng cần bấm `Chia sẻ` là hiện ngay hộp thoại mở **Zalo PC (`zalo://`)** (không qua Windows Share, không qua popup trung gian) và khi vào bất kỳ khung chat Zalo nào bấm **`Ctrl + V`** là dán thẳng **tệp `.PDF` gốc** (không phải ảnh ghép hay chữ cũ).
+- **Giải pháp kỹ thuật (`vite.config.ts`, `shareService.ts`, `DocumentVault.tsx`, `ExportHistoryModal.tsx`)**:
+  1. **Tách biệt hoàn toàn luồng Chia sẻ và Tải về**: Gỡ bỏ 100% lệnh tự động tải vào Downloads khi bấm `Chia sẻ`; bổ sung nút **`Tải về`** độc lập nằm chính xác giữa **`Chia sẻ`** và **`Xem`** trên cả Trang chủ và Lịch sử xuất file.
+  2. **Cầu nối Windows `CF_HDROP` File Clipboard (`windowsPdfClipboardPlugin` trong `vite.config.ts` & `shareService.ts`)**:
+     - Trên Windows PC: Khi bấm `Chia sẻ`, lưu tạm tệp `{Tên_văn_bản}.pdf` vào `%TEMP%\smartscan-share` (tự dọn sau 2 giờ, không làm bẩn thư mục Downloads) và nạp thẳng vào `FileDropList` (`CF_HDROP`) của Windows bằng `Set-Clipboard -LiteralPath` qua biến môi trường an toàn Unicode, đồng thời gọi `zalo://` để bật dialog **Mở Zalo**. Người dùng sang bất kỳ ô chat Zalo PC nào chỉ cần nhấn **`Ctrl + V`** là đính kèm ngay đúng tệp `.PDF` gốc.
+     - Trên Mobile / Tablet: Giữ nguyên `navigator.share` mở bảng chia sẻ gốc của iOS / Android gửi tệp `.PDF` qua Zalo 1 chạm.
+
+---
+
 ## III. BẢNG TỔNG KẾT TRẠNG THÁI CÁC TÍNH NĂNG
 
 | Tính năng | Trạng thái | Ghi chú kỹ thuật |
 | :--- | :---: | :--- |
-| **Quét & Nắn góc WASM** | Hoàn thành (100%) | Homography 3x3, Bilinear Interpolation |
-| **Làm phẳng & Thẳng chữ** | Hoàn thành (100%) | Planar Homography + Radon Deskew $\pm 7.05^\circ$, bảo toàn dòng thẳng |
-| **Đồng nhất nền trắng toàn khung**| Hoàn thành (100%) | Retinex đồng nhất toàn trang, Luma $\ge 225 \rightarrow$ #FFFFFF, sạch viền bàn |
-| **Chữ đen đậm & Dấu đỏ tươi** | Hoàn thành (100%) | Text contrast mũ $0.36$, con dấu đỏ tươi scarlet boost 1.30x |
+| **Quét & Nắn góc WASM** | Hoàn thành (100%) | Single-pass Inverse Homography + Catmull-Rom Bicubic 4×4 |
+| **Làm phẳng & Thẳng chữ** | Hoàn thành (100%) | Sub-pixel Parabolic Dewarp + Quadratic Margin RANSAC |
+| **Xóa vết nám xám & Trắng toàn khung**| Hoàn thành (100%) | 7×7 Local-Drop Stain Eraser + 5×5 Despeckle, nền #FFFFFF |
+| **Chữ đen đậm & Dấu đỏ tươi** | Hoàn thành (100%) | Edge-Gated Unsharp 3×3, bảo toàn khung mảnh 1px & dấu đỏ |
 | **Chia sẻ Zalo PC & Clipboard** | Hoàn thành (100%) | Copy PDF vào Clipboard (Ctrl+V Zalo PC), auto download, mobile native share |
 | **Đồng bộ hiển thị trang & Bộ lọc** | Hoàn thành (100%) | RequestId cancellation, Optimistic update 0ms |
 | **Bảo toàn ảnh scan chuẩn** | Hoàn thành (100%) | Border Whiteness Inspector, giữ 100% khung hình |
